@@ -1,0 +1,19 @@
+.agent-card {
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.agent-card > div:first-child {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-card strong { color: var(--color-ink); }
+.agent-card span { color: var(--color-muted); font-size: 12px; }
+.agent-card dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0 0; }
+.agent-card dt { color: var(--color-muted); font-size: 11px; margin-bottom: 4px; }
+.agent-card dd { color: var(--color-ink); font-size: 13px; font-weight: 800; margin: 0; }

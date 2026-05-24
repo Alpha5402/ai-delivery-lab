@@ -1,0 +1,115 @@
+@import "./tokens.css";
+
+* { box-sizing: border-box; }
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(255, 199, 95, 0.35), transparent 34rem),
+    radial-gradient(circle at 86% 12%, rgba(61, 173, 164, 0.20), transparent 30rem),
+    linear-gradient(135deg, var(--color-bg), var(--color-bg-2));
+  color: var(--color-text);
+  font-family: var(--font-body);
+  margin: 0;
+  min-width: 320px;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(36, 119, 112, 0.35);
+  outline-offset: 2px;
+}
+
+.workbench {
+  display: grid;
+  gap: 22px;
+  margin: 0 auto;
+  max-width: 1480px;
+}
+
+.workbench__hero {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.6fr);
+}
+
+.workbench__metrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workbench__grid {
+  align-items: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(420px, 1.25fr) minmax(300px, 0.75fr);
+}
+
+.workbench__left,
+.workbench__center,
+.workbench__right {
+  display: grid;
+  gap: 16px;
+}
+
+.panel-heading {
+  background: rgba(255,255,255,0.56);
+  border: 1px solid var(--color-border);
+  border-radius: 22px;
+  padding: 18px;
+}
+
+.panel-heading span,
+.agent-stack span {
+  color: var(--color-accent);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.panel-heading h2,
+.agent-stack h3 {
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  font-size: 24px;
+  line-height: 1.08;
+  margin: 6px 0 0;
+}
+
+.agent-stack {
+  background: rgba(255,255,255,0.52);
+  border: 1px solid var(--color-border);
+  border-radius: 22px;
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+}
+
+.agent-stack h3 {
+  font-size: 18px;
+  margin-bottom: 4px;
+}
+
+@media (max-width: 1180px) {
+  .workbench__hero,
+  .workbench__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .workbench__metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .workbench__grid {
+    gap: 14px;
+  }
+}

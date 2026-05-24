@@ -1,0 +1,12 @@
+.test-result-panel {
+  background: #fbf8ef;
+  border: 1px solid rgba(153,112,43,0.16);
+  border-radius: 22px;
+  padding: 18px;
+}
+.test-result-panel span { color: #8a5f14; font-size: 11px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; }
+.test-result-panel h3 { color: var(--color-ink); font-size: 16px; margin: 6px 0 14px; }
+.test-result-panel__summary { display: grid; gap: 8px; grid-template-columns: repeat(3, 1fr); margin-bottom: 12px; }
+.test-result-panel b { background: white; border-radius: 12px; color: var(--color-ink); font-size: 12px; padding: 10px; }
+.test-result-panel article { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; }
+.test-result-panel small, .test-result-panel p { color: var(--color-muted); }

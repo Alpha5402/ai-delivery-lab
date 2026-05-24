@@ -1,0 +1,14 @@
+:root {
+  --color-bg: #eff2e8;
+  --color-bg-2: #f8f2df;
+  --color-ink: #14231e;
+  --color-text: #34423d;
+  --color-muted: #71817b;
+  --color-accent: #247770;
+  --color-accent-strong: #0e5954;
+  --color-border: rgba(24, 46, 39, 0.12);
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-body: "Avenir Next", "Gill Sans", Verdana, sans-serif;
+  --shadow-soft: 0 18px 50px rgba(31, 53, 46, 0.10);
+  --shadow-deep: 0 22px 60px rgba(6, 16, 12, 0.28);
+}
