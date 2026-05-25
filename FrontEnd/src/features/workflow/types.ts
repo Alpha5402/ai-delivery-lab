@@ -13,10 +13,20 @@ export type WorkflowStepId =
 export type RequirementPattern = "frontend-only" | "cross-stack" | "interaction" | "unclear";
 
 export type RequirementDraft = {
+  projectId?: string;
+  workspaceId?: string;
   title: string;
   rawText: string;
   pattern: RequirementPattern;
   targetRepo: "conduit";
+};
+
+export type InterventionMessage = {
+  id: string;
+  stepId: WorkflowStepId;
+  role: "agent" | "user" | "system";
+  content: string;
+  createdAt: string;
 };
 
 export type ClarificationOutput = {
@@ -106,6 +116,7 @@ export type StepRun<TOutput = unknown> = {
   startedAt?: string;
   finishedAt?: string;
   logs: string[];
+  interventions?: InterventionMessage[];
   humanEditable: boolean;
 };
 
@@ -113,6 +124,8 @@ export type WorkflowRun = {
   id: string;
   title: string;
   createdAt: string;
+  updatedAt: string;
+  projectId?: string;
   activeStepId: WorkflowStepId;
   steps: StepRun[];
 };

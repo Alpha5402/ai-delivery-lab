@@ -1,25 +1,14 @@
 .requirement-composer {
-  background: linear-gradient(135deg, rgba(250, 245, 230, 0.92), rgba(222, 240, 229, 0.88));
-  border: 1px solid rgba(36, 119, 112, 0.18);
-  border-radius: 28px;
-  box-shadow: var(--shadow-soft);
-  padding: 24px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 16px;
   position: relative;
   overflow: hidden;
 }
 
-.requirement-composer::after {
-  background: radial-gradient(circle, rgba(255, 152, 67, 0.22), transparent 62%);
-  content: "";
-  height: 180px;
-  position: absolute;
-  right: -70px;
-  top: -70px;
-  width: 180px;
-}
-
-.requirement-composer span { color: var(--color-accent); font-size: 12px; font-weight: 900; letter-spacing: 0.12em; text-transform: uppercase; }
-.requirement-composer h2 { color: var(--color-ink); font-family: var(--font-display); font-size: clamp(28px, 5vw, 44px); line-height: 1; margin: 8px 0 14px; max-width: 720px; }
+.requirement-composer span { color: var(--color-muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.requirement-composer h2 { color: var(--color-ink); font-size: 22px; line-height: 1.25; margin: 8px 0 12px; max-width: 720px; }
 .requirement-composer p { color: var(--color-text); font-size: 16px; line-height: 1.7; margin: 0; max-width: 820px; }
 .requirement-composer__chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
-.requirement-composer__chips b { background: rgba(255,255,255,0.64); border: 1px solid rgba(36,119,112,0.2); border-radius: 999px; color: var(--color-ink); font-size: 12px; padding: 8px 12px; }
+.requirement-composer__chips b { background: var(--color-surface-muted); border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-ink); font-size: 12px; padding: 7px 10px; }

@@ -1,8 +1,7 @@
 .metric-card {
-  background: linear-gradient(145deg, rgba(255,255,255,0.9), rgba(246,249,246,0.74));
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 18px;
-  box-shadow: var(--shadow-soft);
+  border-radius: var(--radius-md);
   display: grid;
   gap: 8px;
   padding: 16px;
@@ -18,8 +17,7 @@
 
 .metric-card strong {
   color: var(--color-ink);
-  font-family: var(--font-display);
-  font-size: 26px;
+  font-size: 22px;
 }
 
 .metric-card--good { border-color: rgba(70, 211, 139, 0.45); }

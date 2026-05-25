@@ -1,57 +1,15 @@
 .app-shell {
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
-  padding: 24px;
 }
 
-.app-shell__topbar {
-  align-items: center;
-  backdrop-filter: blur(18px);
-  background: rgba(248, 246, 238, 0.72);
-  border: 1px solid rgba(36,119,112,0.12);
-  border-radius: 24px;
-  display: flex;
-  justify-content: space-between;
-  margin: 0 auto 22px;
-  max-width: 1480px;
-  padding: 16px 20px;
-  position: sticky;
-  top: 16px;
-  z-index: 10;
-}
-
-.app-shell__topbar span {
-  color: var(--color-accent);
-  display: block;
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.app-shell__topbar strong {
-  color: var(--color-ink);
-  display: block;
-  font-family: var(--font-display);
-  font-size: 22px;
-  margin-top: 3px;
-}
-
-.app-shell__topbar nav {
-  display: flex;
-  gap: 8px;
-}
-
-.app-shell__topbar a {
-  border: 1px solid rgba(36,119,112,0.14);
-  border-radius: 999px;
-  color: var(--color-text);
-  font-size: 13px;
-  font-weight: 800;
-  padding: 9px 13px;
-  text-decoration: none;
+.app-shell > main {
+  flex: 1;
+  min-height: 0;
+  padding: 18px;
 }
 
 @media (max-width: 760px) {
-  .app-shell { padding: 14px; }
-  .app-shell__topbar { align-items: flex-start; flex-direction: column; gap: 14px; position: static; }
+  .app-shell > main { padding: 12px; }
 }

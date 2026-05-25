@@ -1,0 +1,5 @@
+- [x] 搭建 Backend TypeScript + Express 工程骨架，补齐环境变量模板与基础启动入口。
+- [x] 实现 workflow / repository / metrics 的后端 API，并接入前端数据契约。
+- [x] 接入火山方舟 LLM 客户端，实现 clarification 与 solution_design 两个真实 Agent Step。
+- [x] 改造前端 API client，后端不可用时直接向用户报错。
+- [x] 补充后端单元测试与前后端联调验证脚本。

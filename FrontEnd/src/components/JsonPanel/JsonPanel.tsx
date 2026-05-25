@@ -8,7 +8,7 @@ export function JsonPanel({ title, value, editable, onSave }: { title: string; v
     <section className="json-panel">
       <header>
         <div>
-          <span>JSON Contract</span>
+          <span>JSON 契约</span>
           <h3>{title}</h3>
         </div>
         <div className="json-panel__actions">
@@ -24,7 +24,7 @@ export function JsonPanel({ title, value, editable, onSave }: { title: string; v
         onChange={(event) => editor.setDraft(event.target.value)}
         spellCheck={false}
       />
-      {!editor.parsed.ok ? <p className="json-panel__error">JSON 无效：{editor.parsed.message}</p> : <p className="json-panel__ok">JSON 可用于传递到下一 Step</p>}
+      {!editor.parsed.ok ? <p className="json-panel__error">JSON 无效：{editor.parsed.message}</p> : <p className="json-panel__ok">JSON 可用于传递到下一步骤</p>}
     </section>
   );
 }

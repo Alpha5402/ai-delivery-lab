@@ -5,9 +5,9 @@
 
 .step-timeline__item {
   align-items: center;
-  background: rgba(255,255,255,0.62);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 18px;
+  border-radius: var(--radius-md);
   color: inherit;
   cursor: pointer;
   display: grid;
@@ -20,21 +20,26 @@
 
 .step-timeline__item:hover,
 .step-timeline__item--active {
-  background: rgba(255,255,255,0.92);
-  border-color: rgba(36, 119, 112, 0.4);
-  transform: translateY(-1px);
+  background: var(--color-surface-strong);
+  border-color: rgba(26, 115, 232, 0.32);
 }
 
 .step-timeline__index {
   align-items: center;
-  background: var(--color-ink);
-  border-radius: 14px;
-  color: white;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-muted);
   display: inline-flex;
-  font-family: var(--font-display);
   height: 38px;
   justify-content: center;
   width: 38px;
+}
+
+.step-timeline__item--active .step-timeline__index {
+  background: rgba(26, 115, 232, 0.08);
+  border-color: rgba(26, 115, 232, 0.24);
+  color: var(--color-accent-strong);
 }
 
 .step-timeline__content { display: grid; gap: 3px; }

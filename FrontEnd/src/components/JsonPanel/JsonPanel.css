@@ -1,9 +1,8 @@
 .json-panel {
-  background: #101915;
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 24px;
-  box-shadow: var(--shadow-deep);
-  color: #e8f0ec;
+  background: var(--color-surface-strong);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
   overflow: hidden;
 }
 
@@ -12,18 +11,19 @@
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--color-border);
+  padding: 14px;
 }
 
-.json-panel span { color: #95b8ac; font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
-.json-panel h3 { font-family: var(--font-display); font-size: 20px; margin: 4px 0 0; }
+.json-panel span { color: var(--color-muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.json-panel h3 { color: var(--color-ink); font-size: 16px; margin: 4px 0 0; }
 .json-panel__actions { display: flex; gap: 8px; }
-.json-panel button { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.14); border-radius: 999px; color: #e8f0ec; cursor: pointer; font-weight: 800; padding: 8px 12px; }
+.json-panel button { background: var(--color-surface-muted); border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-text); cursor: pointer; font-weight: 700; padding: 8px 11px; }
 .json-panel button:disabled { cursor: not-allowed; opacity: 0.4; }
 .json-panel textarea {
-  background: #0b120f;
+  background: #fbfcfd;
   border: 0;
-  color: #dff7ec;
+  color: var(--color-ink);
   font: 13px/1.65 "SFMono-Regular", Consolas, monospace;
   min-height: 410px;
   outline: 0;
@@ -33,5 +33,5 @@
 }
 .json-panel__error,
 .json-panel__ok { margin: 0; padding: 12px 18px 16px; }
-.json-panel__error { color: #ffb4aa; }
-.json-panel__ok { color: #9de7ba; }
+.json-panel__error { color: var(--color-danger); }
+.json-panel__ok { color: var(--color-good); }
