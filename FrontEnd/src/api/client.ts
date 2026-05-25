@@ -1,6 +1,6 @@
 import type { AgentMetric } from "../features/observability/types";
 import type { RepositorySnapshot } from "../features/repository/types";
-import type { RequirementDraft, WorkflowRun, WorkflowStepId } from "../features/workflow/types";
+import type { RequirementDraft, StepRunSnapshot, WorkflowRun, WorkflowStepId } from "../features/workflow/types";
 import type { ProjectWorkspace, QuickProjectDraft, WorkspaceContext, WorkspaceSummary } from "../features/workspace/types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -26,10 +26,6 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getCurrentWorkflowRun() {
-  return request<WorkflowRun>("/workflows/current");
-}
-
 export function getWorkflowRun(runId: string) {
   return request<WorkflowRun>(`/workflows/${runId}`);
 }
@@ -49,6 +45,12 @@ export function deleteWorkflowRun(runId: string) {
 
 export function runWorkflowStep(runId: string, stepId: WorkflowStepId) {
   return request<WorkflowRun>(`/workflows/${runId}/steps/${stepId}/run`, {
+    method: "POST",
+  });
+}
+
+export function confirmWorkflowStep(runId: string, stepId: WorkflowStepId) {
+  return request<WorkflowRun>(`/workflows/${runId}/steps/${stepId}/confirm`, {
     method: "POST",
   });
 }
@@ -73,6 +75,99 @@ export function replayWorkflowFrom(runId: string, stepId: WorkflowStepId) {
     body: JSON.stringify({ stepId }),
   });
 }
+
+// ---- Step History -----------------------------------------------------------
+
+export function getStepHistory(runId: string, stepId: WorkflowStepId) {
+  return request<StepRunSnapshot[]>(`/workflows/${runId}/steps/${stepId}/history`);
+}
+
+export function restoreStepSnapshot(
+  runId: string,
+  stepId: WorkflowStepId,
+  snapshotId: string,
+  opts?: { replayDownstream?: boolean },
+) {
+  return request<WorkflowRun>(`/workflows/${runId}/steps/${stepId}/restore`, {
+    method: "POST",
+    body: JSON.stringify({ snapshotId, replayDownstream: opts?.replayDownstream }),
+  });
+}
+
+// ---- Workflow Settings ------------------------------------------------------
+
+export type WorkflowStepExecutionMode = "automatic" | "manual-confirmation";
+
+export type WorkflowSettings = {
+  stepExecutionModes: Record<WorkflowStepId, WorkflowStepExecutionMode>;
+};
+
+export function fetchWorkflowSettings() {
+  return request<WorkflowSettings>("/workflows/settings");
+}
+
+export function updateWorkflowSettings(patch: Partial<WorkflowSettings>) {
+  return request<WorkflowSettings>("/workflows/settings", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+// ---- SSE subscription -------------------------------------------------------
+
+export type WorkflowStreamEvent =
+  | { type: "update"; run: WorkflowRun }
+  | {
+      type: "step";
+      runId: string;
+      stepId: WorkflowStepId;
+      phase: "started" | "completed" | "failed" | "waiting-human";
+      message?: string;
+    };
+
+/**
+ * 订阅 workflow run 的 SSE 流。
+ * 返回一个 disposer，调用即关闭连接。
+ */
+export function subscribeWorkflowRun(
+  runId: string,
+  handlers: {
+    onUpdate?: (run: WorkflowRun) => void;
+    onStepEvent?: (event: Extract<WorkflowStreamEvent, { type: "step" }>) => void;
+    onError?: (error: unknown) => void;
+  },
+): () => void {
+  const url = `${API_BASE_URL}/workflows/${runId}/stream`;
+  const source = new EventSource(url);
+
+  source.addEventListener("update", (raw) => {
+    try {
+      const payload = JSON.parse((raw as MessageEvent).data) as { run: WorkflowRun };
+      handlers.onUpdate?.(payload.run);
+    } catch (error) {
+      handlers.onError?.(error);
+    }
+  });
+
+  source.addEventListener("step", (raw) => {
+    try {
+      const payload = JSON.parse((raw as MessageEvent).data) as Extract<WorkflowStreamEvent, { type: "step" }>;
+      handlers.onStepEvent?.(payload);
+    } catch (error) {
+      handlers.onError?.(error);
+    }
+  });
+
+  source.onerror = (event) => {
+    handlers.onError?.(event);
+  };
+
+  return () => {
+    source.close();
+  };
+}
+
+// ---- Repository / metrics / workspace ---------------------------------------
 
 export function getRepositorySnapshot() {
   return request<RepositorySnapshot>("/repository");

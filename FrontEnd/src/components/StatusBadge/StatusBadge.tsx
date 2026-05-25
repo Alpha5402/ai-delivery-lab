@@ -7,7 +7,6 @@ const labels: Record<StepStatus, string> = {
   "waiting-human": "待确认",
   success: "已完成",
   failed: "失败",
-  replayed: "已重放",
 };
 
 export function StatusBadge({ status }: { status: StepStatus }) {

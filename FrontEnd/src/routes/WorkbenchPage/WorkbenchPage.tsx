@@ -3,15 +3,17 @@ import type { ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { Alert, Button, Card, Collapse, Input, Space, Statistic, Tabs, Tag, Timeline, Tooltip, Typography } from "antd";
 import {
+  confirmWorkflowStep,
   createStepIntervention,
   getAgentMetrics,
   getProjectWorkspace,
-  getCurrentWorkflowRun,
   getRepositorySnapshot,
   getWorkflowRun,
   openWorkspace,
   replayWorkflowFrom,
+  restoreStepSnapshot,
   runWorkflowStep,
+  subscribeWorkflowRun,
   updateWorkflowStep,
 } from "../../api/client";
 import { AppBreadcrumb } from "../../components/AppBreadcrumb/AppBreadcrumb";
@@ -272,7 +274,7 @@ function renderStepSummary(step: StepRun) {
 }
 
 
-type RuntimeStatus = "waiting" | "running" | "blocked" | "success" | "failed" | "replaying" | "paused";
+type RuntimeStatus = "waiting" | "running" | "blocked" | "success" | "failed" | "paused";
 type RuntimeEvent = { id: string; time: string; title: string; detail: string; live?: boolean };
 type ChatDensity = "primary" | "secondary" | "minimized";
 
@@ -282,7 +284,6 @@ function mapRuntimeStatus(step: StepRun): RuntimeStatus {
   if (step.status === "waiting-human") return "blocked";
   if (step.status === "success") return "success";
   if (step.status === "failed") return "failed";
-  if (step.status === "replayed") return "replaying";
   return "paused";
 }
 
@@ -292,7 +293,6 @@ const runtimeStatusLabels: Record<RuntimeStatus, string> = {
   blocked: "等待用户",
   success: "已完成",
   failed: "执行失败",
-  replaying: "正在重放",
   paused: "已暂停",
 };
 
@@ -302,7 +302,6 @@ const runtimeStatusColors: Record<RuntimeStatus, string> = {
   blocked: "warning",
   success: "success",
   failed: "error",
-  replaying: "blue",
   paused: "default",
 };
 
@@ -337,12 +336,6 @@ const runtimeStateCopy: Record<RuntimeStatus, { eyebrow: string; title: string; 
     description: "先查看失败原因，再选择重试当前步骤或通过介入缩小约束。",
     cta: "重试步骤",
   },
-  replaying: {
-    eyebrow: "正在重放",
-    title: "正在从当前步骤重放",
-    description: "运行时会保留上游结果，并从该节点重新驱动下游执行。",
-    cta: "重放中",
-  },
   paused: {
     eyebrow: "运行已暂停",
     title: "当前运行时已暂停",
@@ -357,7 +350,6 @@ function formatRuntimeStatusValue(value?: string) {
     failed: "失败",
     passed: "通过",
     pending: "等待中",
-    replayed: "已重放",
     ready: "就绪",
     success: "成功",
     running: "运行中",
@@ -408,8 +400,7 @@ function formatRuntimeEventTitle(title: string) {
     .replace(/ started$/, " 开始执行")
     .replace(/ finished$/, " 执行完成")
     .replace(/ waiting for user$/i, " 等待用户")
-    .replace(/ running$/i, " 正在执行")
-    .replace(/ replaying$/i, " 正在重放");
+    .replace(/ running$/i, " 正在执行");
 }
 
 function formatChangeType(value: string) {
@@ -427,7 +418,7 @@ function formatChangeType(value: string) {
 function getTimelineColor(status: RuntimeStatus) {
   if (status === "success") return "green";
   if (status === "failed") return "red";
-  if (status === "running" || status === "replaying") return "blue";
+  if (status === "running") return "blue";
   if (status === "blocked") return "orange";
   return "gray";
 }
@@ -446,7 +437,7 @@ function buildExecutionEvents(steps: StepRun[], activeStep: StepRun | null, acti
       step.finishedAt ? { id: `${step.id}-finished`, time: step.finishedAt, title: `${step.agent} finished`, detail: formatRuntimeStatusValue(step.status), live: false } : null,
     ].filter(Boolean) as RuntimeEvent[];
     return lifecycle;
-  }).concat(activeStep && ["running", "replaying", "blocked"].includes(activeStatus) ? [{
+  }).concat(activeStep && ["running", "blocked"].includes(activeStatus) ? [{
     id: `${activeStep.id}-live-${activeStatus}`,
     time: new Date().toISOString(),
     title: activeStatus === "blocked" ? "等待人工介入" : `${activeStep.agent} ${runtimeStatusLabels[activeStatus]}`,
@@ -506,6 +497,7 @@ function RuntimeTimeline({
                 <span className="runtime-step__agent">{step.agent}</span>
                 <span className="runtime-step__footer">
                   <Tag color={runtimeStatusColors[status]}>{runtimeStatusLabels[status]}</Tag>
+                  {(step.replayCount ?? 0) > 0 ? <Tag color="purple">重跑 {step.replayCount} 次</Tag> : null}
                 </span>
               </article>
             ),
@@ -819,14 +811,54 @@ function RuntimeStateBanner({
   status,
   running,
   onPrimaryAction,
+  onSecondaryAction,
 }: {
   step: StepRun;
   status: RuntimeStatus;
   running: boolean;
   onPrimaryAction: () => void;
+  onSecondaryAction?: () => void;
 }) {
   const copy = runtimeStateCopy[status];
   const lastLog = step.logs.at(-1);
+
+  function renderActions() {
+    if (status === "running") {
+      return (
+        <Button disabled loading type="primary">{copy.cta}</Button>
+      );
+    }
+
+    if (status === "blocked") {
+      return (
+        <Space>
+          <Button type="primary" onClick={onPrimaryAction} loading={running}>确认并继续</Button>
+          {onSecondaryAction ? <Button onClick={onSecondaryAction}>重新生成</Button> : null}
+        </Space>
+      );
+    }
+
+    if (status === "success") {
+      return (
+        <Space>
+          {onSecondaryAction ? <Button type="primary" onClick={onSecondaryAction}>运行下一步</Button> : null}
+          <Button onClick={onPrimaryAction}>从此重放</Button>
+        </Space>
+      );
+    }
+
+    if (status === "failed") {
+      return (
+        <Button danger type="primary" onClick={onPrimaryAction} loading={running}>重试当前步骤</Button>
+      );
+    }
+
+    // waiting / paused
+    return (
+      <Button type="primary" onClick={onPrimaryAction} loading={running}>{copy.cta}</Button>
+    );
+  }
+
   return (
     <section className={`runtime-state-banner runtime-state-banner--${status}`}>
       <div>
@@ -834,15 +866,7 @@ function RuntimeStateBanner({
         <h2>{copy.title}</h2>
         <p>{status === "failed" && lastLog ? `原因：${lastLog}` : copy.description}</p>
       </div>
-      <Button
-        danger={status === "failed"}
-        disabled={status === "running" || status === "replaying"}
-        loading={running}
-        onClick={onPrimaryAction}
-        type={status === "success" ? "default" : "primary"}
-      >
-        {status === "blocked" ? "确认并自动继续" : copy.cta}
-      </Button>
+      {renderActions()}
     </section>
   );
 }
@@ -852,30 +876,55 @@ function OutputWorkspace({
   workspaceView,
   onWorkspaceViewChange,
   onSaveStep,
+  onRestore,
   compact = false,
 }: {
   step: StepRun;
   workspaceView: "summary" | "json";
   onWorkspaceViewChange: (value: "summary" | "json") => void;
   onSaveStep: (output: unknown) => void;
+  onRestore?: (snapshotId: string) => void;
   compact?: boolean;
 }) {
+  const historyItems = (step.history ?? []).slice().reverse();
+  const tabs = [
+    { key: "summary", label: "结构化输出", children: renderStepSummary(step) },
+    { key: "json", label: "JSON 契约", children: (
+      <JsonPanel
+        title={`${step.label} 输出`}
+        value={step.output ?? step.input ?? pendingStepJson(step)}
+        editable={step.status === "waiting-human"}
+        onSave={onSaveStep}
+      />
+    ) },
+    ...(historyItems.length > 0 ? [{
+      key: "history",
+      label: `历史版本 (${historyItems.length})`,
+      children: (
+        <div className="step-history-list">
+          {historyItems.map((snapshot) => (
+            <div key={snapshot.id} className="step-history-item">
+              <div className="step-history-item__header">
+                <Tag color={snapshot.reason === "replay" ? "purple" : "blue"}>{snapshot.reason === "replay" ? "重放" : "重新生成"}</Tag>
+                <small>{new Date(snapshot.createdAt).toLocaleString()}</small>
+                {onRestore ? (
+                  <Button size="small" onClick={() => onRestore(snapshot.id)}>还原此版本</Button>
+                ) : null}
+              </div>
+              <pre className="step-history-item__preview">{JSON.stringify(snapshot.output, null, 2).slice(0, 500)}</pre>
+            </div>
+          ))}
+        </div>
+      ),
+    }] : []),
+  ];
+
   return (
     <section className={`runtime-output-workspace ${compact ? "runtime-output-workspace--compact" : ""}`}>
       <Tabs
         activeKey={workspaceView}
         onChange={(key) => onWorkspaceViewChange(key as "summary" | "json")}
-        items={[
-          { key: "summary", label: "结构化输出", children: renderStepSummary(step) },
-          { key: "json", label: "JSON 契约", children: (
-            <JsonPanel
-              title={`${step.label} 输出`}
-              value={step.output ?? step.input ?? pendingStepJson(step)}
-              editable={step.humanEditable}
-              onSave={onSaveStep}
-            />
-          ) },
-        ]}
+        items={tabs}
       />
     </section>
   );
@@ -894,6 +943,7 @@ function StateDrivenWorkspace({
   onDraftChange,
   onInterventionSubmit,
   onPrimaryAction,
+  onSecondaryAction,
   onSaveStep,
   onWorkspaceViewChange,
 }: {
@@ -909,6 +959,8 @@ function StateDrivenWorkspace({
   onDraftChange: (value: string) => void;
   onInterventionSubmit: (event: FormEvent) => void;
   onPrimaryAction: () => void;
+  onSecondaryAction?: () => void;
+  onRestore?: (snapshotId: string) => void;
   onSaveStep: (output: unknown) => void;
   onWorkspaceViewChange: (value: "summary" | "json") => void;
 }) {
@@ -924,6 +976,7 @@ function StateDrivenWorkspace({
   );
   const output = (
     <OutputWorkspace
+      onRestore={onRestore}
       onSaveStep={onSaveStep}
       onWorkspaceViewChange={onWorkspaceViewChange}
       step={step}
@@ -934,7 +987,7 @@ function StateDrivenWorkspace({
   if (status === "blocked") {
     return (
       <div className="runtime-state-layout runtime-state-layout--blocked">
-        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
         <div className="runtime-priority-grid runtime-priority-grid--chat">
           <StepChatThread
             density="primary"
@@ -960,7 +1013,7 @@ function StateDrivenWorkspace({
   if (status === "running") {
     return (
       <div className="runtime-state-layout runtime-state-layout--running">
-        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
         <section className="running-workspace">
           <div className="running-workspace__pulse">
             <span className="runtime-presence-dot runtime-presence-dot--running" />
@@ -980,31 +1033,10 @@ function StateDrivenWorkspace({
     );
   }
 
-  if (status === "replaying") {
-    return (
-      <div className="runtime-state-layout runtime-state-layout--replaying">
-        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} running={running} status={status} step={step} />
-        <section className="replay-workspace">
-          <Tag color="purple">重放标记</Tag>
-          <h3>正在重放时间轴</h3>
-          <p>上游快照保持不变，下游步骤将从 {step.label} 开始重新计算。</p>
-          <ExecutionFeed events={events} />
-        </section>
-        <OutputWorkspace
-          compact
-          onSaveStep={onSaveStep}
-          onWorkspaceViewChange={onWorkspaceViewChange}
-          step={step}
-          workspaceView={workspaceView}
-        />
-      </div>
-    );
-  }
-
   if (status === "failed") {
     return (
       <div className="runtime-state-layout runtime-state-layout--failed">
-        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
         <div className="runtime-priority-grid runtime-priority-grid--error">
           <section className="failure-workspace">
             <h3>{step.agent} 执行失败</h3>
@@ -1073,7 +1105,7 @@ function StateDrivenWorkspace({
     if (isPatchReviewStep(step)) {
       return (
         <div className="runtime-state-layout runtime-state-layout--success runtime-state-layout--patch-review">
-          <RuntimeStateBanner onPrimaryAction={onPrimaryAction} running={running} status={status} step={step} />
+          <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
           <PatchReviewWorkspace repoResult={repoResult} step={step} verification={verification} />
           {rawOutputDisclosure}
           {interventionDisclosure}
@@ -1083,7 +1115,7 @@ function StateDrivenWorkspace({
 
     return (
       <div className="runtime-state-layout runtime-state-layout--success">
-        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
         {output}
         <PatchReviewWorkspace repoResult={repoResult} step={step} verification={verification} />
         {interventionDisclosure}
@@ -1093,7 +1125,7 @@ function StateDrivenWorkspace({
 
   return (
     <div className="runtime-state-layout runtime-state-layout--waiting">
-      <RuntimeStateBanner onPrimaryAction={onPrimaryAction} running={running} status={status} step={step} />
+      <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
       {output}
       {chat}
     </div>
@@ -1284,11 +1316,9 @@ export function WorkbenchPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [workspaceView, setWorkspaceView] = useState<"summary" | "json">("summary");
   const [chatDraft, setChatDraft] = useState("");
-  const [chatMessages, setChatMessages] = useState<InterventionMessage[]>([]);
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEvent[]>([]);
-  const [stepRunning, setStepRunning] = useState(false);
   const activeStep = run ? getActiveStep(run) : null;
-  const activeRuntimeStatus: RuntimeStatus = activeStep ? (stepRunning ? "running" : mapRuntimeStatus(activeStep)) : "waiting";
+  const activeRuntimeStatus: RuntimeStatus = activeStep ? mapRuntimeStatus(activeStep) : "waiting";
   const metrics = summarizeMetrics(agentMetrics);
   const repoResult = run ? getStepOutput<RepoWriteResult>(run.steps, "repo_write") : undefined;
   const verification = run ? getStepOutput<VerificationResult>(run.steps, "verification") : undefined;
@@ -1318,7 +1348,7 @@ export function WorkbenchPage() {
     async function loadLiveData() {
       try {
         const [workflowRun, nextMetrics, nextRepository] = await Promise.all([
-          runId ? getWorkflowRun(runId) : getCurrentWorkflowRun(),
+          getWorkflowRun(runId!),
           getAgentMetrics(),
           getRepositorySnapshot(),
         ]);
@@ -1368,19 +1398,48 @@ export function WorkbenchPage() {
     };
   }, [projectId, runId]);
 
+  // SSE：订阅当前 run 的增量事件，后端 mutate 后立即同步到 UI，无需轮询。
+  useEffect(() => {
+    if (!runId) {
+      return undefined;
+    }
+
+    const dispose = subscribeWorkflowRun(runId, {
+      onUpdate: (latest) => {
+        setRun(latest);
+        setApiStatus("live");
+      },
+      onStepEvent: () => {
+        // step 级事件目前仅作为 UI hint，主要由 onUpdate 驱动状态。
+        // 后续可在此 append 一条 runtimeEvent 用于实时反馈。
+        getAgentMetrics().then(setAgentMetrics).catch(() => undefined);
+      },
+      onError: () => {
+        // SSE 断开时不影响主流程；onUpdate 仍会在重连后重新推送。
+      },
+    });
+
+    return dispose;
+  }, [runId]);
+
   async function completeCurrentStep() {
     if (!run || !activeStep) return;
 
+    // 拆分 confirm vs run 两种语义：
+    // - waiting-human：用户审阅通过，调用 /confirm；
+    // - 其他状态（idle / failed / success）：调用 /run 重新生成当前步骤。
+    const action = activeStep.status === "waiting-human" ? "confirm" : "run";
+
     try {
-      setStepRunning(true);
-      setRun(await runWorkflowStep(run.id, activeStep.id));
+      const nextRun = action === "confirm"
+        ? await confirmWorkflowStep(run.id, activeStep.id)
+        : await runWorkflowStep(run.id, activeStep.id);
+      setRun(nextRun);
       setAgentMetrics(await getAgentMetrics());
       setErrorMessage("");
     } catch (error) {
       setApiStatus("error");
       setErrorMessage(error instanceof Error ? error.message : "运行步骤失败，请确认后端服务可达。");
-    } finally {
-      setStepRunning(false);
     }
   }
 
@@ -1393,6 +1452,36 @@ export function WorkbenchPage() {
     } catch (error) {
       setApiStatus("error");
       setErrorMessage(error instanceof Error ? error.message : "重放流程失败，请确认后端服务可达。");
+    }
+  }
+
+  async function handleRunNextStep() {
+    if (!run || !activeStep) return;
+    const currentIndex = run.steps.findIndex((step) => step.id === activeStep.id);
+    const nextStep = run.steps[currentIndex + 1];
+    if (!nextStep) return;
+
+    try {
+      const nextRun = await runWorkflowStep(run.id, nextStep.id);
+      setRun(nextRun);
+      setAgentMetrics(await getAgentMetrics());
+      setErrorMessage("");
+    } catch (error) {
+      setApiStatus("error");
+      setErrorMessage(error instanceof Error ? error.message : "运行下一步失败，请确认后端服务可达。");
+    }
+  }
+
+  async function handleRestore(snapshotId: string) {
+    if (!run || !activeStep) return;
+
+    try {
+      const nextRun = await restoreStepSnapshot(run.id, activeStep.id, snapshotId, { replayDownstream: true });
+      setRun(nextRun);
+      setErrorMessage("");
+    } catch (error) {
+      setApiStatus("error");
+      setErrorMessage(error instanceof Error ? error.message : "还原历史版本失败。");
     }
   }
 
@@ -1421,20 +1510,28 @@ export function WorkbenchPage() {
       createdAt: new Date().toISOString(),
     };
     setChatDraft("");
-    setChatMessages((current) => [...current, localUserMessage]);
+
+    // Optimistic update: 直接将临时消息插入 run.steps 的 interventions
+    const previousRun = run;
+    setRun({
+      ...run,
+      steps: run.steps.map((step) =>
+        step.id === activeStep.id
+          ? { ...step, interventions: [...(step.interventions ?? []), localUserMessage] }
+          : step,
+      ),
+    });
     appendRuntimeEvents(activeStep, ["用户已提交介入", "正在重新生成当前步骤", `${activeStep.agent} started`]);
 
     try {
-      setStepRunning(true);
       const nextRun = await createStepIntervention(run.id, activeStep.id, message);
       setRun(nextRun);
-      setChatMessages((current) => current.filter((item) => item.id !== localUserMessage.id));
       setAgentMetrics(await getAgentMetrics());
       appendRuntimeEvents(activeStep, ["结构化输出已更新", "等待用户确认"]);
     } catch (error) {
+      // 回滚 optimistic update
+      setRun(previousRun);
       setErrorMessage(error instanceof Error ? error.message : "智能体重新生成失败，请确认后端服务可达。");
-    } finally {
-      setStepRunning(false);
     }
   }
 
@@ -1517,14 +1614,22 @@ export function WorkbenchPage() {
             <StateDrivenWorkspace
               draft={chatDraft}
               events={executionEvents}
-              messages={[...(activeStep.interventions ?? []), ...chatMessages]}
+              messages={activeStep.interventions ?? []}
               onDraftChange={setChatDraft}
               onInterventionSubmit={handleInterventionSubmit}
               onPrimaryAction={activeRuntimeStatus === "success" ? () => handleReplay(activeStep.id) : completeCurrentStep}
+              onRestore={handleRestore}
+              onSecondaryAction={
+                activeRuntimeStatus === "blocked"
+                  ? () => runWorkflowStep(run.id, activeStep.id).then(setRun).catch(() => undefined)
+                  : activeRuntimeStatus === "success"
+                    ? handleRunNextStep
+                    : undefined
+              }
               onSaveStep={handleSaveStep}
               onWorkspaceViewChange={setWorkspaceView}
               repoResult={repoResult}
-              running={stepRunning}
+              running={activeRuntimeStatus === "running"}
               status={activeRuntimeStatus}
               step={activeStep}
               verification={verification}

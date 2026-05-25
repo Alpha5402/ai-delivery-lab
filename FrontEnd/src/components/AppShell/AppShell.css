@@ -1,15 +1,59 @@
 .app-shell {
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  background: #f5f6f8;
 }
 
-.app-shell > main {
+.app-shell__nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 24px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 13px;
+}
+
+.app-shell__brand {
+  font-weight: 600;
+  color: #111827;
+  text-decoration: none;
+  letter-spacing: 0.2px;
+}
+
+.app-shell__brand:hover {
+  color: #2563eb;
+}
+
+.app-shell__links {
+  display: flex;
+  gap: 16px;
+}
+
+.app-shell__link {
+  color: #4b5563;
+  text-decoration: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.app-shell__link:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.app-shell__link--active {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.app-shell__main {
   flex: 1;
   min-height: 0;
-  padding: 18px;
 }
 
 @media (max-width: 760px) {
-  .app-shell > main { padding: 12px; }
+  .app-shell__nav { padding: 10px 16px; }
+  .app-shell__links { gap: 8px; }
 }

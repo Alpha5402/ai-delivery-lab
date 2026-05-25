@@ -72,7 +72,6 @@ function createWorkflowRun(projectId: string, id = "run-demo"): WorkflowRun {
           targetRepo: "conduit",
         },
         logs: ["PM 需求已接收"],
-        humanEditable: false,
       },
       {
         id: "clarification",
@@ -81,7 +80,6 @@ function createWorkflowRun(projectId: string, id = "run-demo"): WorkflowRun {
         status: "waiting-human",
         input: { from: "requirement_intake" },
         logs: [],
-        humanEditable: true,
       },
     ],
   } as WorkflowRun;

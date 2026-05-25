@@ -10,22 +10,20 @@ import {
   type WorkflowRun,
   type WorkflowStepId,
   stepAgents,
-  stepExecutionModes,
   stepLabels,
   stepOrder,
 } from "../domain/workflow.js";
 import { getCurrentWorkspace } from "./workspaceService.js";
 import { deleteWorkflowRunFromStore, getStoredWorkflowRun, saveWorkflowRunToStore } from "./workspaceStore.js";
-
-const humanEditableSteps = new Set<WorkflowStepId>([
-  "clarification",
-  "solution_design",
-  "module_mapping",
-  "code_generation",
-]);
+import { workflowEventBus } from "./workflowEvents.js";
+import { getStepExecutionMode } from "./workflowSettingsService.js";
 
 const runs = new Map<string, WorkflowRun>();
-let currentRunId: string | null = null;
+
+/**
+ * 标记某个 run 是否正在被后台 promise 推进，避免并发 autoContinue 重入。
+ */
+const advancing = new Set<string>();
 
 function now() {
   return new Date().toISOString();
@@ -49,8 +47,27 @@ function createSteps(requirement: RequirementDraft): StepRun[] {
       content: "已接收需求，Runtime 将自动进入下一个 Agent Step。",
       createdAt: now(),
     }] : [],
-    humanEditable: humanEditableSteps.has(stepId),
+    replayCount: 0,
+    history: [],
   }));
+}
+
+/**
+ * 对一个有 output 的 step 进行快照（记录当前状态到 history）。
+ * 如果 step 没有 output（idle 状态），返回 null 不做快照。
+ */
+function snapshotStep(step: StepRun, reason: "replay" | "regenerate") {
+  if (!step.output) return null;
+  return {
+    id: `snapshot-${randomUUID()}`,
+    output: step.output,
+    logs: [...step.logs],
+    interventions: step.interventions ? [...step.interventions] : undefined,
+    startedAt: step.startedAt,
+    finishedAt: step.finishedAt,
+    createdAt: now(),
+    reason,
+  };
 }
 
 function persistRun(run: WorkflowRun) {
@@ -60,15 +77,22 @@ function persistRun(run: WorkflowRun) {
   }
 }
 
-export function getCurrentWorkflowRun() {
-  return currentRunId ? runs.get(currentRunId) : undefined;
+/**
+ * 统一的"快照写回 + 持久化 + SSE 广播"出口。
+ * 任何 mutate 完成后必须调用一次，以保证内存 / SQLite / EventBus 三者一致。
+ */
+function commitRun(run: WorkflowRun) {
+  run.updatedAt = now();
+  runs.set(run.id, run);
+  persistRun(run);
+  workflowEventBus.emitUpdate(run);
+  return run;
 }
 
 export function getWorkflowRun(runId: string) {
   const run = runs.get(runId) ?? getStoredWorkflowRun(runId) ?? undefined;
   if (run) {
     runs.set(run.id, run);
-    currentRunId = run.id;
   }
 
   return run;
@@ -86,43 +110,55 @@ export async function createWorkflowRun(input: RequirementDraft & { projectId?: 
     steps: createSteps(input),
   };
 
-  runs.set(run.id, run);
-  currentRunId = run.id;
-  persistRun(run);
-  try {
-    return await autoContinue(run.id);
-  } catch {
-    return getExistingRun(run.id);
-  }
+  commitRun(run);
+
+  // 立即返回快照，autoContinue 在后台推进；前端通过 SSE 拿到增量。
+  void scheduleAutoContinue(run.id);
+
+  return run;
 }
 
 export function updateStepOutput(runId: string, stepId: WorkflowStepId, output: unknown) {
   const run = getExistingRun(runId);
-  run.updatedAt = now();
-  run.steps = run.steps.map((step) =>
-    step.id === stepId
-      ? { ...step, output, logs: [...step.logs, "人工修订了 Step JSON 输出"] }
-      : step,
-  );
-  persistRun(run);
-  return run;
+  const stepIndex = stepOrder.indexOf(stepId);
+
+  run.steps = run.steps.map((step) => {
+    if (step.id === stepId) {
+      return { ...step, output, logs: [...step.logs, "人工修订了 Step JSON 输出"] };
+    }
+    return step;
+  });
+
+  // 向下传播：刷新下一步的 input 保持前端展示与后端 resolveStepOutput 一致。
+  run.steps = propagateInputDownstream(run.steps, stepIndex, output);
+
+  return commitRun(run);
 }
 
 export function replayFromStep(runId: string, stepId: WorkflowStepId) {
   const run = getExistingRun(runId);
   const replayIndex = stepOrder.indexOf(stepId);
   run.activeStepId = stepId;
-  run.updatedAt = now();
   run.steps = run.steps.map((step, index) => {
     if (index < replayIndex) {
       return step;
     }
 
+    // 快照当前状态（仅有 output 时才快照，避免记录空 step）
+    const snapshot = snapshotStep(step, "replay");
+    const updatedHistory = snapshot ? [...(step.history ?? []), snapshot] : (step.history ?? []);
+    const updatedCount = snapshot ? (step.replayCount ?? 0) + 1 : (step.replayCount ?? 0);
+
     if (index === replayIndex) {
       return {
         ...step,
-        status: "replayed",
+        status: "idle",
+        output: undefined,
+        startedAt: undefined,
+        finishedAt: undefined,
         logs: [...step.logs, "从这里开始重放下游流程", "Runtime 将根据 Step 模式自动继续，直到需要人工介入"],
+        replayCount: updatedCount,
+        history: updatedHistory,
       };
     }
 
@@ -133,12 +169,74 @@ export function replayFromStep(runId: string, stepId: WorkflowStepId) {
       startedAt: undefined,
       finishedAt: undefined,
       logs: [],
+      replayCount: updatedCount,
+      history: updatedHistory,
     };
   });
-  persistRun(run);
+  commitRun(run);
+
+  // 立即触发后台续跑（保留 replay 语义，但状态机由 runStep 接管）。
+  void scheduleAutoContinue(run.id, stepId);
   return run;
 }
 
+/**
+ * 显式确认某个处于 waiting-human 的步骤，并触发后续 autoContinue。
+ * 与 runStep（"重新生成"）严格区分，避免之前两种语义共用一个入口的歧义。
+ */
+export function confirmStep(runId: string, stepId: WorkflowStepId) {
+  const run = getExistingRun(runId);
+  const stepIndex = stepOrder.indexOf(stepId);
+  const step = run.steps[stepIndex];
+  if (!step) {
+    throw new Error(`Step not found: ${stepId}`);
+  }
+
+  if (step.status !== "waiting-human") {
+    throw new Error(`Step ${stepId} is not waiting for confirmation (status=${step.status})`);
+  }
+
+  if (step.output === undefined) {
+    throw new Error(`Step ${stepId} has no output to confirm`);
+  }
+
+  const nextStepId = stepOrder[stepIndex + 1] ?? stepId;
+  run.activeStepId = nextStepId;
+  run.steps = run.steps.map((current) => {
+    if (current.id === stepId) {
+      return {
+        ...current,
+        status: "success",
+        finishedAt: current.finishedAt ?? now(),
+        logs: [...current.logs, "User confirmed; Runtime auto-continue resumed"],
+      };
+    }
+    return current;
+  });
+  run.steps = propagateInputDownstream(run.steps, stepIndex, step.output);
+  commitRun(run);
+
+  workflowEventBus.emitStepEvent({
+    type: "step",
+    runId: run.id,
+    stepId,
+    phase: "completed",
+    message: "user-confirmed",
+  });
+
+  void scheduleAutoContinue(run.id);
+  return run;
+}
+
+/**
+ * 总是"重新生成当前 step 的 output"。
+ *
+ * 进入此函数时无论 step 当前是什么状态，都会：
+ * - 立即写入 running 快照并广播；
+ * - 在后台 promise 中调用对应 Agent；
+ * - 完成后根据执行模式（automatic vs manual-confirmation）决定是否继续推进；
+ * - 失败则把 step 标 failed 并广播。
+ */
 export async function runStep(runId: string, stepId: WorkflowStepId) {
   const run = getExistingRun(runId);
   const stepIndex = stepOrder.indexOf(stepId);
@@ -148,27 +246,50 @@ export async function runStep(runId: string, stepId: WorkflowStepId) {
     throw new Error(`Step not found: ${stepId}`);
   }
 
-  if (step.status === "waiting-human" && step.output) {
-    return continueAfterManualConfirmation(run, stepId);
-  }
-
+  // 显式 reset：消除旧的 waiting-human / failed 等状态，确保语义清晰。
+  // 在 reset 前快照当前 step（仅有 output 时）以保留重跑历史。
   run.activeStepId = stepId;
-  run.updatedAt = now();
-  run.steps = run.steps.map((current) => current.id === stepId ? {
-    ...current,
-    status: "running",
-    startedAt: current.startedAt ?? now(),
-    logs: [...current.logs, `${current.agent} started`],
-  } : current);
+  run.steps = run.steps.map((current) => {
+    if (current.id !== stepId) return current;
+    const snapshot = snapshotStep(current, "regenerate");
+    return {
+      ...current,
+      status: "running",
+      output: undefined,
+      startedAt: now(),
+      finishedAt: undefined,
+      logs: [...current.logs, `${current.agent} started`],
+      replayCount: snapshot ? (current.replayCount ?? 0) + 1 : (current.replayCount ?? 0),
+      history: snapshot ? [...(current.history ?? []), snapshot] : (current.history ?? []),
+    };
+  });
+  commitRun(run);
+
+  workflowEventBus.emitStepEvent({
+    type: "step",
+    runId: run.id,
+    stepId,
+    phase: "started",
+  });
+
+  // 后台异步推进；调用方拿到的是"刚切到 running"的快照。
+  void executeStepAndAdvance(run.id, stepId);
+
+  return runs.get(run.id) ?? run;
+}
+
+async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
+  const stepIndex = stepOrder.indexOf(stepId);
 
   try {
+    const run = getExistingRun(runId);
     const output = await resolveStepOutput(run, stepId);
-    const nextStepId = stepOrder[stepIndex + 1] ?? stepId;
 
-    const mode = stepExecutionModes[stepId];
-    run.activeStepId = mode === "manual-confirmation" ? stepId : nextStepId;
-    run.updatedAt = now();
-    run.steps = run.steps.map((current, index) => {
+    const latest = getExistingRun(runId);
+    const mode = getStepExecutionMode(stepId);
+    const nextStepId = stepOrder[stepIndex + 1] ?? stepId;
+    latest.activeStepId = mode === "manual-confirmation" ? stepId : nextStepId;
+    latest.steps = latest.steps.map((current, index) => {
       if (current.id === stepId) {
         return {
           ...current,
@@ -193,28 +314,44 @@ export async function runStep(runId: string, stepId: WorkflowStepId) {
       }
 
       if (mode === "automatic" && index === stepIndex + 1) {
-        return {
-          ...current,
-          input: output,
-          status: current.status === "idle" ? "idle" : current.status,
-        };
+        return { ...current, input: output };
       }
 
       return current;
     });
+    commitRun(latest);
 
-    persistRun(run);
-    return run;
+    workflowEventBus.emitStepEvent({
+      type: "step",
+      runId,
+      stepId,
+      phase: mode === "manual-confirmation" ? "waiting-human" : "completed",
+    });
+
+    if (mode === "automatic") {
+      await advanceWorkflow(runId);
+    }
   } catch (error) {
-    run.updatedAt = now();
-    run.steps = run.steps.map((current) => current.id === stepId ? {
+    const latest = getWorkflowRun(runId);
+    if (!latest) {
+      return;
+    }
+
+    latest.steps = latest.steps.map((current) => current.id === stepId ? {
       ...current,
       status: "failed",
       finishedAt: now(),
       logs: [...current.logs, error instanceof Error ? error.message : "Agent 执行失败"],
     } : current);
-    persistRun(run);
-    throw error;
+    commitRun(latest);
+
+    workflowEventBus.emitStepEvent({
+      type: "step",
+      runId,
+      stepId,
+      phase: "failed",
+      message: error instanceof Error ? error.message : undefined,
+    });
   }
 }
 
@@ -239,24 +376,70 @@ export async function addInterventionAndRegenerate(runId: string, stepId: Workfl
     content: "已记录你的修正，将基于这段 Runtime Memory 重新生成当前 Step。",
     createdAt: now(),
   };
-  run.updatedAt = now();
+
+  // TODO 3：显式 reset，避免 runStep 误进 confirm 分支（旧逻辑会把"提了介入"解释成"确认通过"）。
   run.steps = run.steps.map((current) => current.id === stepId
     ? {
       ...current,
+      status: "idle",
+      output: undefined,
+      finishedAt: undefined,
       interventions: [...(current.interventions ?? []), userMessage, agentMessage],
       logs: [...current.logs, "User intervention submitted", "Regenerating current step"],
     }
     : current);
-  persistRun(run);
+  commitRun(run);
 
   return runStep(runId, stepId);
 }
 
+export function getStepHistory(runId: string, stepId: WorkflowStepId) {
+  const run = getExistingRun(runId);
+  const step = run.steps.find((s) => s.id === stepId);
+  if (!step) throw new Error(`Step not found: ${stepId}`);
+  return step.history ?? [];
+}
+
+export function restoreStepSnapshot(runId: string, stepId: WorkflowStepId, snapshotId: string, replayDownstream = false) {
+  const run = getExistingRun(runId);
+  const stepIndex = stepOrder.indexOf(stepId);
+  const step = run.steps[stepIndex];
+  if (!step) throw new Error(`Step not found: ${stepId}`);
+
+  const snapshot = (step.history ?? []).find((s) => s.id === snapshotId);
+  if (!snapshot) throw new Error(`Snapshot not found: ${snapshotId}`);
+
+  run.steps = run.steps.map((current, index) => {
+    if (current.id === stepId) {
+      return {
+        ...current,
+        output: snapshot.output,
+        status: "waiting-human" as const,
+        logs: [...current.logs, `已还原历史版本 (${snapshot.reason}, ${snapshot.createdAt})`],
+      };
+    }
+
+    if (replayDownstream && index > stepIndex) {
+      return {
+        ...current,
+        status: "idle" as const,
+        output: undefined,
+        startedAt: undefined,
+        finishedAt: undefined,
+        logs: [],
+      };
+    }
+
+    return current;
+  });
+
+  run.activeStepId = stepId;
+  run.steps = propagateInputDownstream(run.steps, stepIndex, snapshot.output);
+  return commitRun(run);
+}
+
 export function deleteWorkflowRun(runId: string) {
   runs.delete(runId);
-  if (currentRunId === runId) {
-    currentRunId = null;
-  }
   deleteWorkflowRunFromStore(runId);
 }
 
@@ -264,60 +447,67 @@ export function evictWorkflowRunsForProject(projectId: string) {
   for (const [runId, run] of runs.entries()) {
     if (run.projectId === projectId) {
       runs.delete(runId);
-      if (currentRunId === runId) {
-        currentRunId = null;
-      }
     }
   }
 }
 
-async function autoContinue(runId: string) {
-  let run = getExistingRun(runId);
+/**
+ * 后台调度 autoContinue：保证同一 run 同时只有一个推进 promise 在跑。
+ * 入参 `from`：可选地把 activeStep 临时跳到某个 step（用于 replay 后立即从该 step 重跑）。
+ */
+function scheduleAutoContinue(runId: string, from?: WorkflowStepId) {
+  if (advancing.has(runId)) {
+    return;
+  }
+  advancing.add(runId);
+
+  void (async () => {
+    try {
+      if (from) {
+        // 从 replay 起点重新跑当前 step（runStep 内部会广播 running）。
+        await runStep(runId, from);
+      } else {
+        await advanceWorkflow(runId);
+      }
+    } finally {
+      advancing.delete(runId);
+    }
+  })();
+}
+
+/**
+ * 顺序推进当前 activeStep，直到遇到 manual-confirmation 卡点 / waiting-human / failed。
+ * 注意：因为 runStep 是异步触发后台 promise，所以这里也只在 automatic 续跑路径上调用。
+ */
+async function advanceWorkflow(runId: string) {
   let guard = 0;
 
   while (guard < stepOrder.length) {
     guard += 1;
+    const run = getWorkflowRun(runId);
+    if (!run) return;
+
     const step = run.steps.find((item) => item.id === run.activeStepId);
-    if (!step || step.status === "waiting-human" || step.status === "failed") {
-      return run;
+    if (!step) return;
+
+    if (step.status === "waiting-human" || step.status === "failed") {
+      return;
     }
 
-    if (stepExecutionModes[step.id] === "automatic" || !step.output) {
-      run = await runStep(run.id, step.id);
+    if (step.status === "running") {
+      // 已有 in-flight，等下一次 commitRun 触发再决定。
+      return;
+    }
+
+    // 进入此 step 的执行（同步等待，确保串行推进）。
+    if (getStepExecutionMode(step.id) === "automatic" || !step.output) {
+      await executeStepAndAdvance(runId, step.id);
+      // executeStepAndAdvance 内部已经处理了 activeStepId / status，进入下一轮。
       continue;
     }
 
-    return run;
+    return;
   }
-
-  return run;
-}
-
-function continueAfterManualConfirmation(run: WorkflowRun, stepId: WorkflowStepId) {
-  const stepIndex = stepOrder.indexOf(stepId);
-  const nextStepId = stepOrder[stepIndex + 1] ?? stepId;
-  run.activeStepId = nextStepId;
-  run.updatedAt = now();
-  run.steps = run.steps.map((current, index) => {
-    if (current.id === stepId) {
-      return {
-        ...current,
-        status: "success",
-        logs: [...current.logs, "User confirmed; Runtime auto-continue resumed"],
-      };
-    }
-
-    if (index === stepIndex + 1) {
-      return {
-        ...current,
-        input: run.steps[stepIndex]?.output,
-      };
-    }
-
-    return current;
-  });
-  persistRun(run);
-  return autoContinue(run.id);
 }
 
 async function resolveStepOutput(run: WorkflowRun, stepId: WorkflowStepId) {
@@ -357,4 +547,22 @@ function getExistingRun(runId: string) {
   }
 
   return run;
+}
+
+/**
+ * 将 step 的 output 向下传播到下一步的 input。
+ * 仅在下一步处于 idle/failed 时覆盖，避免干扰正在执行的步骤。
+ */
+function propagateInputDownstream(steps: StepRun[], stepIndex: number, output: unknown): StepRun[] {
+  const nextIndex = stepIndex + 1;
+  if (nextIndex >= steps.length) return steps;
+
+  const nextStep = steps[nextIndex];
+  if (nextStep.status === "idle" || nextStep.status === "failed") {
+    return steps.map((step, index) =>
+      index === nextIndex ? { ...step, input: output } : step,
+    );
+  }
+
+  return steps;
 }

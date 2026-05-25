@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const stepStatuses = ["idle", "running", "waiting-human", "success", "failed", "replayed"] as const;
+export const stepStatuses = ["idle", "running", "waiting-human", "success", "failed"] as const;
 export const workflowStepIds = [
   "requirement_intake",
   "clarification",
@@ -38,16 +38,8 @@ export const stepAgents: Record<WorkflowStepId, string> = {
   pull_request: "PR Assistant",
 };
 
-export const stepExecutionModes: Record<WorkflowStepId, "automatic" | "manual-confirmation"> = {
-  requirement_intake: "automatic",
-  clarification: "manual-confirmation",
-  solution_design: "automatic",
-  module_mapping: "automatic",
-  code_generation: "automatic",
-  repo_write: "automatic",
-  verification: "automatic",
-  pull_request: "manual-confirmation",
-};
+// 旧的 stepExecutionModes 常量已迁移至 services/workflowSettingsService.ts 的 defaultStepExecutionModes，
+// 并由 getStepExecutionMode() 在运行时按用户配置返回。
 
 export const workflowStepIdSchema = z.enum(workflowStepIds);
 export const stepStatusSchema = z.enum(stepStatuses);
@@ -78,19 +70,6 @@ export const solutionDslSchema = z.object({
   dataContract: z.record(z.unknown()),
 });
 
-const runtimeTraceSchema = z.object({
-  runtime: z.literal("simple-agent-runtime"),
-  workspaceId: z.string(),
-  workspaceDir: z.string().optional(),
-  observations: z.array(z.string()),
-  toolCalls: z.array(z.object({
-    tool: z.string().min(1),
-    input: z.record(z.unknown()),
-    output: z.unknown(),
-    durationMs: z.number().int().min(0),
-  })),
-});
-
 export const moduleMappingSchema = z.object({
   touchedModules: z.array(z.object({
     name: z.string().min(1),
@@ -98,7 +77,6 @@ export const moduleMappingSchema = z.object({
     files: z.array(z.string().min(1)),
   })),
   reusableSkill: z.string().min(1),
-  runtimeTrace: runtimeTraceSchema.optional(),
 });
 
 export const codeGenerationPlanSchema = z.object({
@@ -109,7 +87,6 @@ export const codeGenerationPlanSchema = z.object({
     files: z.array(z.string().min(1)),
     testRequired: z.boolean(),
   })),
-  runtimeTrace: runtimeTraceSchema.optional(),
 });
 
 export const repoWriteResultSchema = z.object({
@@ -120,7 +97,6 @@ export const repoWriteResultSchema = z.object({
     additions: z.number().int().min(0),
     deletions: z.number().int().min(0),
   })),
-  runtimeTrace: runtimeTraceSchema.optional(),
 });
 
 export const verificationResultSchema = z.object({
@@ -132,7 +108,6 @@ export const verificationResultSchema = z.object({
     status: z.enum(["passed", "failed"]),
     durationMs: z.number().int().min(0),
   })),
-  runtimeTrace: runtimeTraceSchema.optional(),
 });
 
 export const pullRequestResultSchema = z.object({
@@ -140,7 +115,6 @@ export const pullRequestResultSchema = z.object({
   url: z.string().min(1),
   status: z.enum(["draft", "ready"]),
   checklist: z.array(z.string().min(1)),
-  runtimeTrace: runtimeTraceSchema.optional(),
 });
 
 export const createWorkflowSchema = z.object({
@@ -184,6 +158,17 @@ export type InterventionMessage = {
   createdAt: string;
 };
 
+export type StepRunSnapshot = {
+  id: string;
+  output: unknown;
+  logs: string[];
+  interventions?: InterventionMessage[];
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt: string;
+  reason: "replay" | "regenerate";
+};
+
 export type StepRun<TOutput = unknown> = {
   id: WorkflowStepId;
   label: string;
@@ -195,7 +180,8 @@ export type StepRun<TOutput = unknown> = {
   finishedAt?: string;
   logs: string[];
   interventions?: InterventionMessage[];
-  humanEditable: boolean;
+  replayCount: number;
+  history: StepRunSnapshot[];
 };
 
 export type WorkflowRun = {
