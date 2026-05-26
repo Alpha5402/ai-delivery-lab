@@ -126,8 +126,8 @@ export type WorkflowStreamEvent =
     };
 
 /**
- * 订阅 workflow run 的 SSE 流。
- * 返回一个 disposer，调用即关闭连接。
+ * 订阅 workflow run 的 SSE 流，支持指数退避自动重连。
+ * 返回一个 disposer，调用即关闭连接并停止重连。
  */
 export function subscribeWorkflowRun(
   runId: string,
@@ -135,35 +135,77 @@ export function subscribeWorkflowRun(
     onUpdate?: (run: WorkflowRun) => void;
     onStepEvent?: (event: Extract<WorkflowStreamEvent, { type: "step" }>) => void;
     onError?: (error: unknown) => void;
+    onReconnect?: (attempt: number) => void;
   },
 ): () => void {
   const url = `${API_BASE_URL}/workflows/${runId}/stream`;
-  const source = new EventSource(url);
+  const MAX_RETRIES = 10;
+  const BASE_DELAY_MS = 1000;
+  const MAX_DELAY_MS = 30000;
 
-  source.addEventListener("update", (raw) => {
-    try {
-      const payload = JSON.parse((raw as MessageEvent).data) as { run: WorkflowRun };
-      handlers.onUpdate?.(payload.run);
-    } catch (error) {
-      handlers.onError?.(error);
-    }
-  });
+  let source: EventSource | null = null;
+  let retryCount = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
 
-  source.addEventListener("step", (raw) => {
-    try {
-      const payload = JSON.parse((raw as MessageEvent).data) as Extract<WorkflowStreamEvent, { type: "step" }>;
-      handlers.onStepEvent?.(payload);
-    } catch (error) {
-      handlers.onError?.(error);
-    }
-  });
+  function connect() {
+    if (disposed) return;
 
-  source.onerror = (event) => {
-    handlers.onError?.(event);
-  };
+    source = new EventSource(url);
+
+    source.addEventListener("update", (raw) => {
+      retryCount = 0; // 成功收到消息，重置重试计数
+      try {
+        const payload = JSON.parse((raw as MessageEvent).data) as { run: WorkflowRun };
+        handlers.onUpdate?.(payload.run);
+      } catch (error) {
+        handlers.onError?.(error);
+      }
+    });
+
+    source.addEventListener("step", (raw) => {
+      retryCount = 0;
+      try {
+        const payload = JSON.parse((raw as MessageEvent).data) as Extract<WorkflowStreamEvent, { type: "step" }>;
+        handlers.onStepEvent?.(payload);
+      } catch (error) {
+        handlers.onError?.(error);
+      }
+    });
+
+    source.onerror = () => {
+      // EventSource 进入 CLOSED 状态时尝试重连
+      if (disposed) return;
+
+      source?.close();
+      source = null;
+
+      if (retryCount >= MAX_RETRIES) {
+        handlers.onError?.(new Error(`SSE connection failed after ${MAX_RETRIES} retries`));
+        return;
+      }
+
+      retryCount += 1;
+      // 指数退避: delay = min(base * 2^(retry-1), max) + jitter
+      const exponentialDelay = Math.min(BASE_DELAY_MS * Math.pow(2, retryCount - 1), MAX_DELAY_MS);
+      const jitter = Math.random() * 500;
+      const delay = exponentialDelay + jitter;
+
+      handlers.onReconnect?.(retryCount);
+      retryTimer = setTimeout(connect, delay);
+    };
+  }
+
+  connect();
 
   return () => {
-    source.close();
+    disposed = true;
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    source?.close();
+    source = null;
   };
 }
 

@@ -104,43 +104,91 @@ export async function callJsonLlmWithSchema<TContent>(
   );
 }
 
+/** LLM 请求超时（毫秒） */
+const LLM_TIMEOUT_MS = 60_000;
+/** 网络级重试次数（仅对超时 / 5xx 重试，4xx 或解析错误不重试） */
+const LLM_MAX_RETRIES = 2;
+/** 重试间隔基数（毫秒），每次翻倍 */
+const LLM_RETRY_BASE_MS = 2_000;
+
 async function requestChatCompletion(messages: ChatMessage[]) {
   if (!env.ARK_API_KEY || !env.ARK_MODEL) {
     throw new LlmNotConfiguredError();
   }
 
-  const startedAt = performance.now();
-  const response = await fetch(`${env.ARK_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.ARK_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: env.ARK_MODEL,
-      messages,
-      temperature: 0.2,
-    }),
-  });
-  const latencyMs = Math.round(performance.now() - startedAt);
+  let lastError: Error | undefined;
 
-  if (!response.ok) {
-    throw new Error(`LLM request failed: ${response.status} ${await response.text()}`);
+  for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+    const startedAt = performance.now();
+    try {
+      const response = await fetch(`${env.ARK_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.ARK_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: env.ARK_MODEL,
+          messages,
+          temperature: 0.2,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      const latencyMs = Math.round(performance.now() - startedAt);
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => "");
+        const error = new Error(`LLM request failed: ${response.status} ${errorBody}`);
+        // 仅对 5xx / 429 重试
+        if (response.status >= 500 || response.status === 429) {
+          lastError = error;
+          await sleep(LLM_RETRY_BASE_MS * attempt);
+          continue;
+        }
+        throw error;
+      }
+
+      const payload = await response.json() as ChatCompletionResponse;
+      const rawContent = payload.choices?.[0]?.message?.content;
+
+      if (!rawContent) {
+        throw new Error("LLM response did not include message content");
+      }
+
+      return {
+        rawContent,
+        inputTokens: payload.usage?.prompt_tokens ?? 0,
+        outputTokens: payload.usage?.completion_tokens ?? 0,
+        latencyMs,
+      };
+    } catch (error) {
+      clearTimeout(timeoutId);
+      const isAbort = error instanceof Error && error.name === "AbortError";
+      const isNetwork = error instanceof TypeError; // fetch network error
+      if (isAbort || isNetwork) {
+        lastError = new Error(
+          isAbort
+            ? `LLM request timed out after ${LLM_TIMEOUT_MS}ms (attempt ${attempt}/${LLM_MAX_RETRIES})`
+            : `LLM network error: ${(error as Error).message} (attempt ${attempt}/${LLM_MAX_RETRIES})`,
+        );
+        if (attempt < LLM_MAX_RETRIES) {
+          await sleep(LLM_RETRY_BASE_MS * attempt);
+          continue;
+        }
+      }
+      throw lastError ?? error;
+    }
   }
 
-  const payload = await response.json() as ChatCompletionResponse;
-  const rawContent = payload.choices?.[0]?.message?.content;
+  throw lastError ?? new Error("LLM request failed after all retries");
+}
 
-  if (!rawContent) {
-    throw new Error("LLM response did not include message content");
-  }
-
-  return {
-    rawContent,
-    inputTokens: payload.usage?.prompt_tokens ?? 0,
-    outputTokens: payload.usage?.completion_tokens ?? 0,
-    latencyMs,
-  };
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function parseJsonContent(rawContent: string) {

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Button, Card, Input, Modal, Space, Spin, Timeline, Typography, message } from "antd";
+import { Alert, Button, Card, Input, Modal, Skeleton, Space, Spin, Timeline, Typography, message } from "antd";
 import { deleteProjectWorkspace, importWorkspace, listRecentProjects, openWorkspace } from "../../api/client";
 import type { ProjectWorkspace } from "../../features/workspace/types";
 import { saveWorkspace } from "../../features/workspace/workspaceStorage";
@@ -372,7 +372,13 @@ export function StartPage() {
               </div>
             ))}
           </div>
-        ) : recentStatus !== "loading" ? (
+        ) : recentStatus === "loading" ? (
+          <div className="recent-projects__list">
+            <Skeleton.Input active style={{ width: "100%", height: 42 }} />
+            <Skeleton.Input active style={{ width: "100%", height: 42 }} />
+            <Skeleton.Input active style={{ width: "100%", height: 42 }} />
+          </div>
+        ) : recentStatus !== "failed" ? (
           <p className="recent-projects__empty">还没有最近工作区。打开本地项目或克隆仓库后，会在这里保留继续入口。</p>
         ) : null}
       </section>

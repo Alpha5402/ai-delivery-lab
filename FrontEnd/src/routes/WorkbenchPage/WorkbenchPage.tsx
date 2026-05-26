@@ -16,6 +16,7 @@ import {
   subscribeWorkflowRun,
 } from "../../api/client";
 import { AppBreadcrumb } from "../../components/AppBreadcrumb/AppBreadcrumb";
+import { PageSkeleton } from "../../components/PageSkeleton/PageSkeleton";
 import { RepositoryChanges } from "../../components/RepositoryChanges/RepositoryChanges";
 import { TestResultPanel } from "../../components/TestResultPanel/TestResultPanel";
 import { summarizeMetrics } from "../../features/observability/metricsSummary";
@@ -1683,7 +1684,7 @@ export function WorkbenchPage() {
           project={projectBreadcrumb}
           workflow={runId ? { id: runId, title: "正在加载工作流..." } : undefined}
         />
-        <Alert message="正在连接后端 API" description="前端正在请求工作流、仓库和指标接口。" type="info" showIcon />
+        <PageSkeleton variant="workbench" />
       </main>
     );
   }
