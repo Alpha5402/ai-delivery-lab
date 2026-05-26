@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Alert, Button, Card, Drawer, Input, Modal, Space, Tag, Typography, message } from "antd";
-import { createWorkflowRun, deleteWorkflowRun, getProjectWorkspace, openWorkspace } from "../../api/client";
+import { createWorkflowRun, deleteWorkflowRun, getCurrentWorkspace, getProjectWorkspace, openWorkspace } from "../../api/client";
 import { AppBreadcrumb } from "../../components/AppBreadcrumb/AppBreadcrumb";
 import type { RequirementPattern } from "../../features/workflow/types";
 import type { ProjectWorkspace, WorkflowRunSummary, WorkspaceContext } from "../../features/workspace/types";
@@ -104,8 +104,22 @@ export function ChatPage() {
     let isMounted = true;
 
     async function hydrateProject() {
-      const currentWorkspace = loadWorkspace();
-      const activeProjectId = projectId ?? currentWorkspace?.id;
+      const cachedWorkspace = loadWorkspace();
+      let activeProjectId = projectId ?? cachedWorkspace?.id;
+
+      // 如果没有 projectId 且 session 缓存为空，尝试从后端获取当前 workspace
+      if (!activeProjectId) {
+        try {
+          const currentWs = await getCurrentWorkspace();
+          if (currentWs?.id) {
+            activeProjectId = currentWs.id;
+            saveWorkspace(currentWs);
+          }
+        } catch {
+          // 后端无当前 workspace，跳转首页
+        }
+      }
+
       if (!activeProjectId) {
         navigate("/dashboard", { replace: true });
         return;

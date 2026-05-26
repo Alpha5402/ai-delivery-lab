@@ -123,7 +123,8 @@ export type WorkflowStreamEvent =
       stepId: WorkflowStepId;
       phase: "started" | "completed" | "failed" | "waiting-human";
       message?: string;
-    };
+    }
+  | { type: "settings"; settings: WorkflowSettings };
 
 /**
  * 订阅 workflow run 的 SSE 流，支持指数退避自动重连。
@@ -134,6 +135,7 @@ export function subscribeWorkflowRun(
   handlers: {
     onUpdate?: (run: WorkflowRun) => void;
     onStepEvent?: (event: Extract<WorkflowStreamEvent, { type: "step" }>) => void;
+    onSettingsChanged?: (settings: WorkflowSettings) => void;
     onError?: (error: unknown) => void;
     onReconnect?: (attempt: number) => void;
   },
@@ -168,6 +170,16 @@ export function subscribeWorkflowRun(
       try {
         const payload = JSON.parse((raw as MessageEvent).data) as Extract<WorkflowStreamEvent, { type: "step" }>;
         handlers.onStepEvent?.(payload);
+      } catch (error) {
+        handlers.onError?.(error);
+      }
+    });
+
+    source.addEventListener("settings", (raw) => {
+      retryCount = 0;
+      try {
+        const payload = JSON.parse((raw as MessageEvent).data) as { settings: WorkflowSettings };
+        handlers.onSettingsChanged?.(payload.settings);
       } catch (error) {
         handlers.onError?.(error);
       }

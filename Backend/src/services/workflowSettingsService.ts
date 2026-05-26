@@ -7,6 +7,7 @@ import {
   type WorkflowStepId,
   workflowStepIds,
 } from "../domain/workflow.js";
+import { workflowEventBus } from "./workflowEvents.js";
 
 /**
  * 默认执行模式（产品语义）：
@@ -97,6 +98,8 @@ export function updateWorkflowSettings(patch: WorkflowSettingsPatch): WorkflowSe
 
   cached = next;
   writeToDisk(next);
+  // 广播 settings 变更到所有 SSE 订阅者
+  workflowEventBus.emitSettingsChanged(next);
   return next;
 }
 

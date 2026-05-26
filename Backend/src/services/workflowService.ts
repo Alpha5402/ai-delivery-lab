@@ -25,6 +25,25 @@ const runs = new Map<string, WorkflowRun>();
  */
 const advancing = new Set<string>();
 
+/** 读缓存 TTL：5 分钟未访问则从内存淘汰 */
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const cacheTimestamps = new Map<string, number>();
+
+function touchCache(runId: string) {
+  cacheTimestamps.set(runId, Date.now());
+}
+
+/** 定期淘汰过期缓存条目（每分钟执行一次） */
+setInterval(() => {
+  const threshold = Date.now() - CACHE_TTL_MS;
+  for (const [runId, ts] of cacheTimestamps.entries()) {
+    if (ts < threshold && !advancing.has(runId)) {
+      runs.delete(runId);
+      cacheTimestamps.delete(runId);
+    }
+  }
+}, 60_000).unref();
+
 function now() {
   return new Date().toISOString();
 }
@@ -78,24 +97,38 @@ function persistRun(run: WorkflowRun) {
 }
 
 /**
- * 统一的"快照写回 + 持久化 + SSE 广播"出口。
- * 任何 mutate 完成后必须调用一次，以保证内存 / SQLite / EventBus 三者一致。
+ * 统一的"持久化 → 缓存写回 → SSE 广播"出口。
+ * SQLite 是 source-of-truth，内存 Map 仅为读缓存。
+ * 任何 mutate 完成后必须调用一次。
  */
 function commitRun(run: WorkflowRun) {
   run.updatedAt = now();
-  runs.set(run.id, run);
+  // 1. 先写 SQLite（source-of-truth）
   persistRun(run);
+  // 2. 再更新内存缓存
+  runs.set(run.id, run);
+  touchCache(run.id);
+  // 3. 广播 SSE
   workflowEventBus.emitUpdate(run);
   return run;
 }
 
 export function getWorkflowRun(runId: string) {
-  const run = runs.get(runId) ?? getStoredWorkflowRun(runId) ?? undefined;
-  if (run) {
-    runs.set(run.id, run);
+  // 1. 读缓存
+  const cached = runs.get(runId);
+  if (cached) {
+    touchCache(runId);
+    return cached;
   }
 
-  return run;
+  // 2. Cache miss → 从 SQLite 加载
+  const stored = getStoredWorkflowRun(runId) ?? undefined;
+  if (stored) {
+    runs.set(stored.id, stored);
+    touchCache(stored.id);
+  }
+
+  return stored;
 }
 
 export async function createWorkflowRun(input: RequirementDraft & { projectId?: string }) {
@@ -440,6 +473,7 @@ export function restoreStepSnapshot(runId: string, stepId: WorkflowStepId, snaps
 
 export function deleteWorkflowRun(runId: string) {
   runs.delete(runId);
+  cacheTimestamps.delete(runId);
   deleteWorkflowRunFromStore(runId);
 }
 
@@ -447,6 +481,7 @@ export function evictWorkflowRunsForProject(projectId: string) {
   for (const [runId, run] of runs.entries()) {
     if (run.projectId === projectId) {
       runs.delete(runId);
+      cacheTimestamps.delete(runId);
     }
   }
 }

@@ -1,0 +1,42 @@
+services:
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    container_name: conduit-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - backend-data:/app/data
+      - workspace-data:/app/workspace
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - WORKSPACE_DB_PATH=/app/data/workspaces.sqlite
+      - CORS_ORIGIN=http://localhost
+      - ARK_API_KEY=${ARK_API_KEY:-}
+      - ARK_BASE_URL=${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      - ARK_MODEL=${ARK_MODEL:-}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./FrontEnd
+      dockerfile: Dockerfile
+    container_name: conduit-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  backend-data:
+  workspace-data:

@@ -110,6 +110,8 @@ workflowRoutes.get("/:runId/stream", (req, res) => {
   const unsubscribe = workflowEventBus.subscribe(req.params.runId, (event) => {
     if (event.type === "update") {
       send("update", { run: event.run });
+    } else if (event.type === "settings") {
+      send("settings", { settings: event.settings });
     } else {
       send("step", event);
     }
