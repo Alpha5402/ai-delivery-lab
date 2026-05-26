@@ -1,5 +1,5 @@
 .app-shell {
-  min-height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   background: #f5f6f8;
@@ -9,10 +9,26 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 24px;
   padding: 10px 24px;
   background: #ffffff;
   border-bottom: 1px solid #e5e7eb;
+  flex: 0 0 auto;
   font-size: 13px;
+}
+
+.app-shell__breadcrumb {
+  min-width: 0;
+  flex: 1;
+  color: #667085;
+  line-height: 1.4;
+}
+
+.app-shell__breadcrumb .ant-breadcrumb-link {
+  max-width: min(42vw, 520px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-shell__brand {
@@ -27,6 +43,7 @@
 }
 
 .app-shell__links {
+  flex: 0 0 auto;
   display: flex;
   gap: 16px;
 }
@@ -51,9 +68,21 @@
 .app-shell__main {
   flex: 1;
   min-height: 0;
+  overflow: auto;
 }
 
 @media (max-width: 760px) {
-  .app-shell__nav { padding: 10px 16px; }
+  .app-shell__nav {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 16px;
+  }
+  .app-shell__breadcrumb {
+    width: 100%;
+  }
+  .app-shell__breadcrumb .ant-breadcrumb-link {
+    max-width: 74vw;
+  }
   .app-shell__links { gap: 8px; }
 }

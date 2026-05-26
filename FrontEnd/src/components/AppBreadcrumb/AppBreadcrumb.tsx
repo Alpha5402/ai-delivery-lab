@@ -1,6 +1,7 @@
-import { Breadcrumb } from "antd";
+import { useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
-import "./AppBreadcrumb.css";
+import type { AppShellBreadcrumbItem } from "../AppShell/AppShell";
+import { useAppShellBreadcrumb } from "../AppShell/AppShell";
 
 export interface AppBreadcrumbProps {
   project?: {
@@ -14,24 +15,35 @@ export interface AppBreadcrumbProps {
 }
 
 export function AppBreadcrumb({ project, workflow }: AppBreadcrumbProps) {
-  const items = [
-    {
-      title: project ? <Link to="/dashboard">工作台</Link> : "工作台",
-    },
-  ];
+  const { setBreadcrumbItems } = useAppShellBreadcrumb();
 
-  if (project) {
+  const items = useMemo<AppShellBreadcrumbItem[]>(() => {
+    const nextItems: AppShellBreadcrumbItem[] = [];
+
+    if (!project) {
+      return nextItems;
+    }
+
     const projectTitle = `项目：${project.name || "正在加载项目..."}`;
-    items.push({
+    nextItems.push({
+      key: "project",
       title: workflow ? <Link to={`/project/${project.id}`}>{projectTitle}</Link> : projectTitle,
     });
-  }
 
-  if (project && workflow) {
-    items.push({
-      title: `工作流：${workflow.title || "正在加载工作流..."}`,
-    });
-  }
+    if (workflow) {
+      nextItems.push({
+        key: "workflow",
+        title: `工作流：${workflow.title || "正在加载工作流..."}`,
+      });
+    }
 
-  return <Breadcrumb className="app-breadcrumb" items={items} />;
+    return nextItems;
+  }, [project?.id, project?.name, workflow?.id, workflow?.title]);
+
+  useEffect(() => {
+    setBreadcrumbItems(items);
+    return () => setBreadcrumbItems([]);
+  }, [items, setBreadcrumbItems]);
+
+  return null;
 }

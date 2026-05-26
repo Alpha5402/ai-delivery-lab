@@ -39,27 +39,38 @@
   max-width: 840px;
 }
 
+.runtime-workbench .ant-tag {
+  background: transparent;
+}
+
+.runtime-workbench .workbench__meta span,
+.runtime-telemetry-strip span {
+  background: transparent;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  padding: 3px 8px;
+}
+
 .runtime-telemetry-strip {
   align-items: center;
   color: #667085;
-  background: #fff;
-  border: 1px solid #edf0f5;
-  border-radius: 8px;
-  display: grid;
+  background: transparent;
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
   font-size: 12px;
-  gap: 0;
-  grid-template-columns: repeat(3, auto);
-  overflow: hidden;
+  gap: 6px;
+  justify-content: flex-end;
   white-space: nowrap;
 }
 
 .runtime-telemetry-strip span {
-  border-right: 1px solid #edf0f5;
-  padding: 8px 10px;
-}
-
-.runtime-telemetry-strip span:last-child {
-  border-right: 0;
+  display: inline-flex;
+  gap: 4px;
 }
 
 .runtime-telemetry-strip strong {
@@ -389,7 +400,6 @@
 
 .runtime-state-banner span,
 .patch-workspace header span {
-  color: #667085;
   display: block;
   font-size: 11px;
   font-weight: 800;
@@ -451,6 +461,10 @@
   overflow: auto;
 }
 
+.runtime-state-layout--blocked .intervention-workspace {
+  margin: 0 20px 20px;
+}
+
 .runtime-priority-grid--error {
   align-items: start;
 }
@@ -460,6 +474,37 @@
   border: 1px solid #edf0f5;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.step-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.step-history-item {
+  background: #fafcff;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.step-history-item__header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.step-history-item__header small,
+.step-history-item__summary {
+  color: #667085;
+}
+
+.step-history-item__summary {
+  font-size: 12px;
+  margin: 0;
 }
 
 .running-workspace,
@@ -645,7 +690,8 @@
 }
 
 .changed-file-row__type.ant-tag {
-  border: 0;
+  background: transparent;
+  border: 1px solid #d0d5dd;
   border-radius: 4px;
   color: #475467;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -1019,6 +1065,201 @@
 
 .runtime-chat__input .ant-btn {
   justify-self: end;
+}
+
+.intervention-workspace {
+  background: #fff;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 16px;
+}
+
+.intervention-workspace__header {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.intervention-workspace__header span,
+.clarification-review__summary span {
+  color: #667085;
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.intervention-workspace__header h3 {
+  color: #101828;
+  font-size: 16px;
+  margin: 2px 0 4px;
+}
+
+.intervention-workspace__header p,
+.clarification-review__summary p {
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.clarification-review {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.clarification-review__summary {
+  background: #fafcff;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.clarification-question-list.ant-collapse {
+  background: transparent;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.clarification-question-list__label {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+}
+
+.clarification-question-list__label b {
+  color: #344054;
+  font-size: 12px;
+}
+
+.clarification-question {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.clarification-question section {
+  display: grid;
+  gap: 6px;
+}
+
+.clarification-question h4 {
+  color: #101828;
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.clarification-question p {
+  color: #101828;
+  font-weight: 400;
+  margin: 0;
+}
+
+.clarification-question small {
+  color: #667085;
+  line-height: 1.5;
+}
+
+.intervention-composer {
+  background: #fff;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.intervention-composer .ant-input,
+.clarification-question .ant-input {
+  border: 0;
+  box-shadow: none;
+  padding: 6px 8px;
+}
+
+.intervention-composer__footer {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.intervention-composer__footer span {
+  font-size: 12px;
+}
+
+.intervention-history-inline {
+  border-top: 1px solid #edf0f5;
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.intervention-history-inline h4 {
+  color: #344054;
+  font-size: 13px;
+  margin: 0;
+}
+
+.runtime-memory-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.runtime-memory-panel header span {
+  color: #667085;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.runtime-memory-panel header h3 {
+  color: #101828;
+  font-size: 14px;
+  margin: 2px 0 0;
+}
+
+.runtime-memory-item {
+  background: #fafcff;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.runtime-memory-item h4 {
+  color: #101828;
+  font-size: 14px;
+  margin: 0;
+}
+
+.runtime-memory-item ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.runtime-memory-item footer {
+  color: #667085;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 12px;
 }
 
 .runtime-context-panel .ant-card-body {
