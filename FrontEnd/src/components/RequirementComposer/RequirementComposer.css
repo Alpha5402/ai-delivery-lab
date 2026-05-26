@@ -1,14 +1,1 @@
-.requirement-composer {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 16px;
-  position: relative;
-  overflow: hidden;
-}
-
-.requirement-composer span { color: var(--color-muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
-.requirement-composer h2 { color: var(--color-ink); font-size: 22px; line-height: 1.25; margin: 8px 0 12px; max-width: 720px; }
-.requirement-composer p { color: var(--color-text); font-size: 16px; line-height: 1.7; margin: 0; max-width: 820px; }
-.requirement-composer__chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
-.requirement-composer__chips b { background: var(--color-surface-muted); border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-ink); font-size: 12px; padding: 7px 10px; }
+/* RequirementComposer now uses antd Card + Tag — no custom CSS needed */

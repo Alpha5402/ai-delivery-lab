@@ -366,7 +366,7 @@
 .runtime-output-workspace .ant-tabs {
   min-height: 0;
   min-width: 0;
-  padding: 0 20px;
+  padding: 0 20px 20px;
 }
 
 .runtime-output-workspace .ant-tabs-content-holder,
@@ -380,7 +380,7 @@
   display: grid;
   gap: 16px;
   min-width: 0;
-  padding: 18px 0 20px;
+  padding: 18px 0 0 0;
 }
 
 .runtime-state-layout--blocked,
@@ -472,7 +472,6 @@
 .runtime-output-workspace--compact {
   background: #fafcff;
   border: 1px solid #edf0f5;
-  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -1338,7 +1337,8 @@
   box-shadow: 0 8px 24px rgba(16, 24, 40, 0.05);
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  min-height: 240px;
   overflow: hidden;
   position: sticky;
   top: 16px;
@@ -1367,7 +1367,7 @@
 }
 
 .runtime-feed-sticky .execution-feed ul {
-  max-height: calc(100vh - 92px);
+  max-height: calc(100dvh - 92px);
   min-height: 160px;
 }
 
@@ -1486,6 +1486,21 @@
   }
 
   .runtime-chat__input {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-feed-sticky .execution-feed {
+    max-height: none;
+    position: relative;
+    top: auto;
+  }
+
+  .runtime-feed-sticky .execution-feed ul {
+    max-height: 200px;
+  }
+
+  .runtime-priority-grid--chat,
+  .runtime-priority-grid--error {
     grid-template-columns: 1fr;
   }
 }

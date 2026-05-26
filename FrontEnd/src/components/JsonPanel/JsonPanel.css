@@ -17,9 +17,7 @@
 
 .json-panel span { color: var(--color-muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 .json-panel h3 { color: var(--color-ink); font-size: 16px; margin: 4px 0 0; }
-.json-panel__actions { display: flex; gap: 8px; }
-.json-panel button { background: var(--color-surface-muted); border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-text); cursor: pointer; font-weight: 700; padding: 8px 11px; }
-.json-panel button:disabled { cursor: not-allowed; opacity: 0.4; }
+
 .json-panel textarea {
   background: #fbfcfd;
   border: 0;
@@ -31,7 +29,3 @@
   resize: vertical;
   width: 100%;
 }
-.json-panel__error,
-.json-panel__ok { margin: 0; padding: 12px 18px 16px; }
-.json-panel__error { color: var(--color-danger); }
-.json-panel__ok { color: var(--color-good); }

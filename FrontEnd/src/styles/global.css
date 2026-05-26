@@ -33,9 +33,9 @@ textarea:focus-visible {
 .workbench {
   display: grid;
   gap: 16px;
-  padding: 16px;
   margin: 0 auto;
   max-width: 1480px;
+  width: 100%;
 }
 
 .workbench__runbar {
@@ -87,22 +87,6 @@ textarea:focus-visible {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
-}
-
-.workbench__button {
-  background: var(--color-surface-strong);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-sm);
-  color: var(--color-text);
-  cursor: pointer;
-  font-weight: 700;
-  padding: 10px 13px;
-}
-
-.workbench__button--primary {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: white;
 }
 
 .workbench__meta {
@@ -178,10 +162,6 @@ textarea:focus-visible {
 }
 
 @media (max-width: 640px) {
-  .workbench__metrics {
-    grid-template-columns: 1fr;
-  }
-
   .workbench__grid {
     gap: 14px;
   }

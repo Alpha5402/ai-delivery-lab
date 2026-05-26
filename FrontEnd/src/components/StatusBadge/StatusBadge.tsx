@@ -1,14 +1,15 @@
+import { Tag } from "antd";
 import type { StepStatus } from "../../features/workflow/types";
-import "./StatusBadge.css";
 
-const labels: Record<StepStatus, string> = {
-  idle: "待执行",
-  running: "执行中",
-  "waiting-human": "待确认",
-  success: "已完成",
-  failed: "失败",
+const config: Record<StepStatus, { label: string; color: string }> = {
+  idle: { label: "待执行", color: "default" },
+  running: { label: "执行中", color: "processing" },
+  "waiting-human": { label: "待确认", color: "warning" },
+  success: { label: "已完成", color: "success" },
+  failed: { label: "失败", color: "error" },
 };
 
 export function StatusBadge({ status }: { status: StepStatus }) {
-  return <span className={`status-badge status-badge--${status}`}>{labels[status]}</span>;
+  const { label, color } = config[status];
+  return <Tag color={color}>{label}</Tag>;
 }

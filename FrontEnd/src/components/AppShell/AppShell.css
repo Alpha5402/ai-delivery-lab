@@ -69,6 +69,7 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  padding: var(--space-lg) var(--page-padding-inline);
 }
 
 @media (max-width: 760px) {
@@ -78,11 +79,14 @@
     gap: 8px;
     padding: 10px 16px;
   }
+  .app-shell__main {
+    padding: var(--space-md);
+  }
   .app-shell__breadcrumb {
     width: 100%;
   }
   .app-shell__breadcrumb .ant-breadcrumb-link {
-    max-width: 74vw;
+    max-width: min(74vw, calc(100vw - 64px));
   }
   .app-shell__links { gap: 8px; }
 }

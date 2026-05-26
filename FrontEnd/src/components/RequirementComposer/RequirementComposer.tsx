@@ -1,19 +1,25 @@
+import { Card, Space, Tag, Typography } from "antd";
 import type { RequirementDraft } from "../../features/workflow/types";
-import "./RequirementComposer.css";
+
+const { Text, Title } = Typography;
 
 export function RequirementComposer({ requirement }: { requirement: RequirementDraft }) {
   return (
-    <section className="requirement-composer">
+    <Card
+      style={{ borderRadius: "var(--radius-md)" }}
+    >
       <div>
-        <span>PM Requirement</span>
-        <h2>{requirement.title}</h2>
+        <Text type="secondary" style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+          PM Requirement
+        </Text>
+        <Title level={4} style={{ margin: "8px 0 12px", maxWidth: 720 }}>{requirement.title}</Title>
       </div>
-      <p>{requirement.rawText}</p>
-      <div className="requirement-composer__chips">
-        <b>{requirement.pattern}</b>
-        <b>{requirement.targetRepo}</b>
-        <b>L1 演示链路</b>
-      </div>
-    </section>
+      <Text style={{ fontSize: 16, lineHeight: 1.7, maxWidth: 820, display: "block" }}>{requirement.rawText}</Text>
+      <Space wrap style={{ marginTop: 18 }}>
+        <Tag>{requirement.pattern}</Tag>
+        <Tag>{requirement.targetRepo}</Tag>
+        <Tag>L1 演示链路</Tag>
+      </Space>
+    </Card>
   );
 }

@@ -4,6 +4,7 @@
   margin: 0 auto;
   max-width: 1180px;
   padding-bottom: 36px;
+  width: 100%;
 }
 
 .requirement-hero {
@@ -352,7 +353,8 @@
   color: #dbeafe;
   font: 12px/1.7 "SFMono-Regular", Consolas, monospace;
   margin: 18px 0 0;
-  max-height: calc(100vh - 260px);
+  max-height: calc(100dvh - 260px);
+  min-height: 120px;
   overflow: auto;
   padding: 18px;
   white-space: pre-wrap;

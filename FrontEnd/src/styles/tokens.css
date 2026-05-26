@@ -23,4 +23,15 @@
   --radius-md: 12px;
   --radius-lg: 16px;
   --shadow-soft: 0 10px 30px rgba(20, 32, 48, 0.06);
+
+  /* Spacing scale (8px base) */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+
+  /* Page-level inline padding: min 16px, scales with viewport, max 48px */
+  --page-padding-inline: clamp(16px, 3vw, 48px);
 }
