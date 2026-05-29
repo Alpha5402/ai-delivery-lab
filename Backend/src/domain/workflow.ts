@@ -132,6 +132,8 @@ export const codeGenerationPlanSchema = z.object({
     title: z.string().min(1),
     files: z.array(z.string().min(1)),
     testRequired: z.boolean(),
+    /** 跨栈 Skill 注入：标注该任务覆盖的层 (data / api / ui) */
+    coverLayer: z.enum(["data", "api", "ui"]).optional(),
   })),
   /**
    * 可选的可落盘补丁集合。当 LLM 对文件内容有把握时,可以同时输出完整文件内容,

@@ -25,6 +25,8 @@ export const agentRuntimeTraceSchema = z.object({
   workspaceDir: z.string().optional(),
   observations: z.array(z.string()),
   toolCalls: z.array(runtimeToolCallSchema),
+  /** 命中的 Skill id，用于在 UI / API 中展示本次由哪个 Skill 控制执行 */
+  selectedSkillId: z.string().optional(),
 });
 
 export type RuntimeToolName = z.infer<typeof runtimeToolNameSchema>;

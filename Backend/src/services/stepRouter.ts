@@ -70,30 +70,47 @@ export function moduleMappingInstructionAddon(ctx: RouterContext): string {
  *  - backend scope: typecheck + test 必选;
  *  - fullstack: 全部必选;
  *  - unknown: 兜底全部跑。
+ *
+ * 可选传入 skill 的 verificationPolicyAddon 以合并到最终策略。
  */
-export function verificationCommandPolicy(ctx: RouterContext) {
-  switch (ctx.scope) {
-    case "frontend":
-      return {
-        required: ["npm:typecheck", "npm:lint", "npm:test"],
-        optional: ["npm:build", "tsc:noemit"],
-      };
-    case "backend":
-      return {
-        required: ["npm:typecheck", "npm:test"],
-        optional: ["npm:lint", "npm:build", "tsc:noemit"],
-      };
-    case "fullstack":
-      return {
-        required: ["npm:typecheck", "npm:lint", "npm:test", "npm:build"],
-        optional: ["tsc:noemit"],
-      };
-    default:
-      return {
-        required: ["npm:typecheck", "npm:lint", "npm:test"],
-        optional: ["npm:build", "tsc:noemit"],
-      };
+export function verificationCommandPolicy(
+  ctx: RouterContext,
+  skillAddon?: { required?: string[]; optional?: string[] },
+) {
+  const base = (() => {
+    switch (ctx.scope) {
+      case "frontend":
+        return {
+          required: ["npm:typecheck", "npm:lint", "npm:test"],
+          optional: ["npm:build", "tsc:noemit"],
+        };
+      case "backend":
+        return {
+          required: ["npm:typecheck", "npm:test"],
+          optional: ["npm:lint", "npm:build", "tsc:noemit"],
+        };
+      case "fullstack":
+        return {
+          required: ["npm:typecheck", "npm:lint", "npm:test", "npm:build"],
+          optional: ["tsc:noemit"],
+        };
+      default:
+        return {
+          required: ["npm:typecheck", "npm:lint", "npm:test"],
+          optional: ["npm:build", "tsc:noemit"],
+        };
+    }
+  })();
+
+  if (skillAddon) {
+    // 合并：skill 的 required 追加到 base.required（去重），optional 同理
+    const required = [...new Set([...base.required, ...(skillAddon.required ?? [])])];
+    const optional = [...new Set([...base.optional, ...(skillAddon.optional ?? [])])]
+      .filter((cmd) => !required.includes(cmd)); // optional 中不在 required 里的才保留
+    return { required, optional };
   }
+
+  return base;
 }
 
 /**
