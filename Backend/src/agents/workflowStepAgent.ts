@@ -112,6 +112,7 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
     runtimeTrace: {
       ...result.trace,
       selectedSkillId: skillSpec.skillId,
+      skillMatchReason: skillSpec.skillMatchReason,
     },
   };
 }
@@ -246,6 +247,7 @@ async function runVerificationStep(run: WorkflowRun) {
       ],
       toolCalls: toolTraces,
       selectedSkillId: skillSpecForVerify.skillId,
+      skillMatchReason: skillSpecForVerify.skillMatchReason,
     },
     runId: run.id,
   };
@@ -367,6 +369,7 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
       ],
       toolCalls: toolTraces,
       selectedSkillId: skillSpecForWrite.skillId,
+      skillMatchReason: skillSpecForWrite.skillMatchReason,
     },
   };
 }

@@ -46,3 +46,12 @@ export type SkillManifest = {
   /** 按 step 拆分的注入规格。仅填写该 Skill 关注的 step 即可。 */
   steps: Partial<Record<WorkflowStepId, SkillStepSpec>>;
 };
+
+/** Skill 命中原因的简要描述，用于 UI 展示 */
+export type SkillMatchReason = {
+  skillId: string;
+  skillName: string;
+  matchedPattern: string;
+  matchedScope?: string;
+  hitKeywords: string[];
+};

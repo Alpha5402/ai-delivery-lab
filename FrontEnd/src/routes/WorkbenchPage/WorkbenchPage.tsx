@@ -1279,22 +1279,45 @@ function StateDrivenWorkspace({
   );
 }
 
-function SkillBadge({ step }: { step: StepRun }) {
+function SkillBadge({ run, step }: { run: WorkflowRun; step: StepRun }) {
+  // 优先从 run 级别读取（API 响应已注入），fallback 到 step output 中的 trace
+  const runReason = run.skillMatchReason;
   const trace = (step.output as Record<string, unknown> | undefined)?.runtimeTrace as
-    | { selectedSkillId?: string }
+    | {
+        selectedSkillId?: string;
+        skillMatchReason?: {
+          skillId: string;
+          skillName: string;
+          matchedPattern: string;
+          matchedScope?: string;
+          hitKeywords: string[];
+        };
+      }
     | undefined;
-  const skillId = trace?.selectedSkillId;
+  const skillId = run.selectedSkillId ?? trace?.selectedSkillId;
+  const reason = runReason ?? trace?.skillMatchReason;
   if (!skillId) return null;
+
+  const tooltipLines: string[] = [];
+  if (reason) {
+    tooltipLines.push(`Skill: ${reason.skillName}`);
+    tooltipLines.push(`命中 Pattern: ${reason.matchedPattern}`);
+    if (reason.matchedScope) tooltipLines.push(`Scope: ${reason.matchedScope}`);
+    if (reason.hitKeywords.length) tooltipLines.push(`命中关键词: ${reason.hitKeywords.join(", ")}`);
+  }
 
   return (
     <ContextSection title="命中 Skill">
-      <Tag color="purple">{skillId}</Tag>
+      <Tooltip title={tooltipLines.length ? <div>{tooltipLines.map((l, i) => <div key={i}>{l}</div>)}</div> : undefined}>
+        <Tag color="purple">{reason?.skillName ?? skillId}</Tag>
+      </Tooltip>
     </ContextSection>
   );
 }
 
 function DynamicSidePanel({
   activeStep,
+  run,
   requirement,
   repository,
   repoResult,
@@ -1303,6 +1326,7 @@ function DynamicSidePanel({
   agentMetrics,
 }: {
   activeStep: StepRun;
+  run: WorkflowRun;
   requirement: RequirementDraft;
   repository: RepositorySnapshot;
   repoResult?: RepoWriteResult;
@@ -1313,7 +1337,7 @@ function DynamicSidePanel({
   if (activeStep.id === "clarification" || activeStep.id === "solution_design" || activeStep.id === "requirement_intake") {
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge step={activeStep} />
+        <SkillBadge run={run} step={activeStep} />
         <ContextSection title="PM 输入 / 澄清">
           <Typography.Paragraph>{requirement.rawText}</Typography.Paragraph>
         </ContextSection>
@@ -1346,7 +1370,7 @@ function DynamicSidePanel({
       : [];
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge step={activeStep} />
+        <SkillBadge run={run} step={activeStep} />
         <ContextSection title="上下文定位">
           <InlineList items={files} empty="等待智能体定位文件后展示代码上下文。" />
         </ContextSection>
@@ -1363,7 +1387,7 @@ function DynamicSidePanel({
   if (activeStep.id === "repo_write") {
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge step={activeStep} />
+        <SkillBadge run={run} step={activeStep} />
         <ContextSection title="代码生成 / 写入">
           <RepositoryChanges repository={repository} result={repoResult} />
         </ContextSection>
@@ -1380,7 +1404,7 @@ function DynamicSidePanel({
   if (activeStep.id === "verification") {
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge step={activeStep} />
+        <SkillBadge run={run} step={activeStep} />
         <ContextSection title="验证器 / 质量门">
           <TestResultPanel result={verification} />
         </ContextSection>
@@ -1401,7 +1425,7 @@ function DynamicSidePanel({
     const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge step={activeStep} />
+        <SkillBadge run={run} step={activeStep} />
         <ContextSection title="PR 状态">
           <div className="runtime-sidecar-status">
             <Tag color={pr?.status === "ready" ? "success" : "blue"} variant="outlined">{formatRuntimeStatusValue(pr?.status)}</Tag>
@@ -1429,7 +1453,7 @@ function DynamicSidePanel({
 
   return (
     <Card className="runtime-panel runtime-telemetry-panel" title="执行遥测" bordered={false}>
-      <SkillBadge step={activeStep} />
+      <SkillBadge run={run} step={activeStep} />
       <div className="runtime-telemetry-grid">
         <Statistic title="智能体调用" value={metrics.calls} />
         <Statistic title="上下文 Token" value={metrics.inputTokens + metrics.outputTokens} />
@@ -1783,6 +1807,7 @@ export function WorkbenchPage() {
           </div>
           <DynamicSidePanel
             activeStep={activeStep}
+            run={run}
             agentMetrics={agentMetrics}
             metrics={metrics}
             repoResult={repoResult}

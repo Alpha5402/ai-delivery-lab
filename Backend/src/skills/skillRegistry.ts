@@ -1,5 +1,5 @@
-import type { ClarificationOutput, RequirementDraft, SolutionDsl, WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
-import type { SkillManifest, SkillStepSpec } from "./skillTypes.js";
+import type { RequirementDraft, SolutionDsl, WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
+import type { SkillManifest, SkillMatchReason, SkillStepSpec } from "./skillTypes.js";
 
 const skills = new Map<string, SkillManifest>();
 
@@ -18,15 +18,16 @@ export function getSkill(id: string): SkillManifest | undefined {
   return skills.get(id);
 }
 
+type SelectionResult = {
+  skill: SkillManifest;
+  hitKeywords: string[];
+};
+
 /**
  * 基于当前 run 的上下文选择最匹配的 Skill。
- * 匹配策略：
- * 1. pattern 必须匹配（在 Skill 声明的 requirementPatterns 范围内）
- * 2. scope 必须匹配（在 Skill 声明的 scopes 范围内）
- * 3. 如果提供了 keywords，对需求文本进行关键词命中计数
- * 4. 取匹配关键词最多的 Skill；平局时返回第一个注册的
+ * 同时返回命中原因（hitKeywords）供 UI 展示。
  */
-export function selectSkill(run: WorkflowRun): SkillManifest | undefined {
+function selectWithReason(run: WorkflowRun): SelectionResult | undefined {
   const requirement = run.steps.find((s) => s.id === "requirement_intake")?.output as RequirementDraft | undefined;
   const solution = run.steps.find((s) => s.id === "solution_design")?.output as SolutionDsl | undefined;
 
@@ -36,37 +37,80 @@ export function selectSkill(run: WorkflowRun): SkillManifest | undefined {
   const pattern = requirement.pattern;
   const scope = solution?.scope;
 
-  let best: { skill: SkillManifest; score: number } | undefined;
+  // 打分制：pattern / scope 是加分项而非硬门槛。
+  // 这样 unclear 模式 + fullstack scope 的需求仍然能靠关键词命中 Skill。
+  const PATTERN_SCORE = 2;
+  const SCOPE_SCORE = 2;
+
+  let best: { skill: SkillManifest; score: number; hitKeywords: string[] } | undefined;
 
   for (const skill of skills.values()) {
-    // 1. pattern 匹配
-    if (!skill.requirementPatterns.includes(pattern)) continue;
-
-    // 2. scope 匹配（如果 solution 已产出）
-    if (scope && !skill.scopes.includes(scope)) continue;
-
-    // 3. 关键词命中计数
     let score = 0;
+
+    // pattern 匹配加分
+    if (skill.requirementPatterns.includes(pattern)) {
+      score += PATTERN_SCORE;
+    }
+
+    // scope 匹配加分（无 scope 时不扣分，仅在有 scope 且匹配时加分）
+    if (scope && skill.scopes.includes(scope)) {
+      score += SCOPE_SCORE;
+    }
+
+    // 关键词命中计数
+    const hitKeywords: string[] = [];
     if (skill.match.keywords) {
       for (const kw of skill.match.keywords) {
         if (rawText.includes(kw.toLowerCase())) {
+          hitKeywords.push(kw);
           score += 1;
         }
       }
     }
 
-    // 无关键词命中时至少给 0.5 分（仅 pattern + scope 匹配）
-    if (score === 0 && skill.match.keywords && skill.match.keywords.length > 0) {
-      continue; // 声明了关键词但没有命中 → 不匹配
-    }
+    // 至少命中一个关键词才进入候选；pattern/scope 仅为加分项（tiebreaker）
+    if (hitKeywords.length === 0) continue;
 
     if (!best || score > best.score) {
-      best = { skill, score };
+      best = { skill, score, hitKeywords };
     }
   }
 
-  return best?.skill;
+  return best ? { skill: best.skill, hitKeywords: best.hitKeywords } : undefined;
 }
+
+/** 基于当前 run 选择最匹配的 Skill（只返回 manifest，向后兼容）。 */
+export function selectSkill(run: WorkflowRun): SkillManifest | undefined {
+  return selectWithReason(run)?.skill;
+}
+
+/** 构建命中原因摘要，供运行时 trace 和 UI 展示。 */
+export function buildMatchReason(run: WorkflowRun): SkillMatchReason | undefined {
+  const sel = selectWithReason(run);
+  if (!sel) return undefined;
+
+  const requirement = run.steps.find((s) => s.id === "requirement_intake")?.output as RequirementDraft | undefined;
+  const solution = run.steps.find((s) => s.id === "solution_design")?.output as SolutionDsl | undefined;
+
+  return {
+    skillId: sel.skill.id,
+    skillName: sel.skill.name,
+    matchedPattern: requirement?.pattern ?? "unknown",
+    matchedScope: solution?.scope,
+    hitKeywords: sel.hitKeywords,
+  };
+}
+
+/** getSkillStepSpec 的返回类型 */
+export type SkillStepSpecResult = {
+  skillId?: string;
+  instructionAddon?: string;
+  outputContractAddon?: string;
+  contextHints?: string[];
+  verificationPolicyAddon?: { required?: string[]; optional?: string[] };
+  /** 命中原因，前端 SkillBadge tooltip 展示 */
+  skillMatchReason?: SkillMatchReason;
+};
 
 /**
  * 为给定 run 的指定 step 获取 Skill 注入规格。
@@ -75,24 +119,18 @@ export function selectSkill(run: WorkflowRun): SkillManifest | undefined {
 export function getSkillStepSpec(
   run: WorkflowRun,
   stepId: WorkflowStepId,
-): {
-  skillId?: string;
-  instructionAddon?: string;
-  outputContractAddon?: string;
-  contextHints?: string[];
-  verificationPolicyAddon?: { required?: string[]; optional?: string[] };
-} {
-  const skill = selectSkill(run);
-  if (!skill) return {};
+): SkillStepSpecResult {
+  const sel = selectWithReason(run);
+  if (!sel) return {};
 
-  const stepSpec: SkillStepSpec | undefined = skill.steps[stepId];
-  if (!stepSpec) return { skillId: skill.id };
+  const stepSpec: SkillStepSpec | undefined = sel.skill.steps[stepId];
 
   return {
-    skillId: skill.id,
-    instructionAddon: stepSpec.instructionAddon,
-    outputContractAddon: stepSpec.outputContractAddon,
-    contextHints: stepSpec.contextHints,
-    verificationPolicyAddon: stepSpec.verificationPolicyAddon,
+    skillId: sel.skill.id,
+    instructionAddon: stepSpec?.instructionAddon,
+    outputContractAddon: stepSpec?.outputContractAddon,
+    contextHints: stepSpec?.contextHints,
+    verificationPolicyAddon: stepSpec?.verificationPolicyAddon,
+    skillMatchReason: buildMatchReason(run),
   };
 }

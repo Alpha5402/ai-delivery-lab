@@ -32,6 +32,24 @@ export type LlmHarnessResult<TContent> = LlmJsonResult<TContent> & {
   validationErrors: string[];
 };
 
+/**
+ * 可注入的 LLM transport，用于测试时替换真实 HTTP 调用。
+ * 生产代码不注入，自动走 Volcengine Ark fetch 路径。
+ */
+export type LlmTransport = (messages: ChatMessage[]) => Promise<{
+  rawContent: string;
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+}>;
+
+let _transport: LlmTransport | null = null;
+
+/** 注入自定义 transport。传 null 恢复默认 HTTP transport。 */
+export function setLlmTransport(transport: LlmTransport | null): void {
+  _transport = transport;
+}
+
 export class LlmNotConfiguredError extends Error {
   constructor() {
     super("ARK_API_KEY or ARK_MODEL is not configured");
@@ -112,6 +130,8 @@ const LLM_MAX_RETRIES = 2;
 const LLM_RETRY_BASE_MS = 2_000;
 
 async function requestChatCompletion(messages: ChatMessage[]) {
+  if (_transport) return _transport(messages);
+
   if (!env.ARK_API_KEY || !env.ARK_MODEL) {
     throw new LlmNotConfiguredError();
   }

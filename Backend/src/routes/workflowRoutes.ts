@@ -24,6 +24,17 @@ import {
   updateWorkflowSettings,
   workflowSettingsPatchSchema,
 } from "../services/workflowSettingsService.js";
+import { buildMatchReason } from "../skills/skillRegistry.js";
+import type { WorkflowRun } from "../domain/workflow.js";
+
+/** 在返回给前端前注入 Skill 命中信息（run 级别）。 */
+function enrichWithSkill(run: WorkflowRun): WorkflowRun {
+  const reason = buildMatchReason(run);
+  if (reason) {
+    return { ...run, selectedSkillId: reason.skillId, skillMatchReason: reason };
+  }
+  return run;
+}
 
 export const workflowRoutes = Router();
 
@@ -53,7 +64,7 @@ workflowRoutes.get("/:runId", (req, res) => {
     return;
   }
 
-  res.json(run);
+  res.json(enrichWithSkill(run));
 });
 
 workflowRoutes.post("/", async (req, res) => {
@@ -72,7 +83,7 @@ workflowRoutes.post("/", async (req, res) => {
     targetRepo: parsed.data.targetRepo,
   });
 
-  res.status(201).json(run);
+  res.status(201).json(enrichWithSkill(run));
 });
 
 workflowRoutes.delete("/:runId", (req, res) => {
@@ -105,11 +116,11 @@ workflowRoutes.get("/:runId/stream", (req, res) => {
   };
 
   // 初始快照，前端订阅成功后立刻渲染。
-  send("update", { run });
+  send("update", { run: enrichWithSkill(run) });
 
   const unsubscribe = workflowEventBus.subscribe(req.params.runId, (event) => {
     if (event.type === "update") {
-      send("update", { run: event.run });
+      send("update", { run: enrichWithSkill(event.run) });
     } else if (event.type === "settings") {
       send("settings", { settings: event.settings });
     } else {
@@ -141,7 +152,7 @@ workflowRoutes.post("/:runId/steps/:stepId/interventions", async (req, res) => {
   }
 
   try {
-    res.json(await addInterventionAndRegenerate(req.params.runId, parsedStepId.data, parsedBody.data.message));
+    res.json(enrichWithSkill(await addInterventionAndRegenerate(req.params.runId, parsedStepId.data, parsedBody.data.message)));
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "Workflow intervention failed" });
   }
@@ -156,7 +167,7 @@ workflowRoutes.post("/:runId/steps/:stepId/run", async (req, res) => {
   }
 
   try {
-    res.json(await runStep(req.params.runId, parsedStepId.data));
+    res.json(enrichWithSkill(await runStep(req.params.runId, parsedStepId.data)));
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "Workflow step failed" });
   }
@@ -171,7 +182,7 @@ workflowRoutes.post("/:runId/steps/:stepId/confirm", (req, res) => {
   }
 
   try {
-    res.json(confirmStep(req.params.runId, parsedStepId.data));
+    res.json(enrichWithSkill(confirmStep(req.params.runId, parsedStepId.data)));
   } catch (error) {
     res.status(409).json({ message: error instanceof Error ? error.message : "Workflow step confirm failed" });
   }
@@ -187,7 +198,7 @@ workflowRoutes.patch("/:runId/steps/:stepId", (req, res) => {
   }
 
   try {
-    res.json(updateStepOutput(req.params.runId, parsedStepId.data, parsedBody.data.output));
+    res.json(enrichWithSkill(updateStepOutput(req.params.runId, parsedStepId.data, parsedBody.data.output)));
   } catch (error) {
     res.status(404).json({ message: error instanceof Error ? error.message : "Workflow run not found" });
   }
@@ -202,7 +213,7 @@ workflowRoutes.post("/:runId/replay", (req, res) => {
   }
 
   try {
-    res.json(replayFromStep(req.params.runId, parsed.data.stepId));
+    res.json(enrichWithSkill(replayFromStep(req.params.runId, parsed.data.stepId)));
   } catch (error) {
     res.status(404).json({ message: error instanceof Error ? error.message : "Workflow run not found" });
   }
@@ -238,7 +249,7 @@ workflowRoutes.post("/:runId/steps/:stepId/restore", (req, res) => {
   }
 
   try {
-    res.json(restoreStepSnapshot(req.params.runId, parsedStepId.data, snapshotId, replayDownstream));
+    res.json(enrichWithSkill(restoreStepSnapshot(req.params.runId, parsedStepId.data, snapshotId, replayDownstream)));
   } catch (error) {
     res.status(404).json({ message: error instanceof Error ? error.message : "Restore failed" });
   }
