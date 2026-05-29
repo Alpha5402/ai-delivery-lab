@@ -358,6 +358,16 @@ export type WorkflowRun = {
   projectId?: string;
   activeStepId: WorkflowStepId;
   steps: StepRun[];
+  /** 本次 run 命中的 Skill id（run 级别，非步骤级别） */
+  selectedSkillId?: string;
+  /** Skill 命中原因摘要，供前端展示 */
+  skillMatchReason?: {
+    skillId: string;
+    skillName: string;
+    matchedPattern: string;
+    matchedScope?: string;
+    hitKeywords: string[];
+  };
 };
 
 export type RepositorySnapshot = {

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Alert, Button, Segmented, Skeleton, Space, Typography, message } from "antd";
+import { Alert, Button, Card, Segmented, Skeleton, Space, Tag, Typography, message } from "antd";
 import {
   fetchWorkflowSettings,
+  listSkills,
   updateWorkflowSettings,
+  type SkillSummary,
   type WorkflowSettings,
   type WorkflowStepExecutionMode,
 } from "../../api/client";
@@ -35,15 +37,20 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchWorkflowSettings()
-      .then((data) => {
+    Promise.all([
+      fetchWorkflowSettings(),
+      listSkills().catch(() => [] as SkillSummary[]),
+    ])
+      .then(([data, skillList]) => {
         if (cancelled) return;
         setSettings(data);
         setDraft(data);
+        setSkills(skillList);
         setErrorText(null);
       })
       .catch((error: unknown) => {
@@ -134,6 +141,34 @@ export function SettingsPage() {
           ))}
         </div>
       )}
+
+      <Card title="已注册 Skill" size="small" style={{ marginTop: 24 }}>
+        {skills.length === 0 ? (
+          <Text type="secondary">暂无已注册的 Skill。后端启动时自动注册 builtin/ 下的 Skill 文件。</Text>
+        ) : (
+          skills.map((skill) => (
+            <div key={skill.id} style={{ marginBottom: 12 }}>
+              <Space wrap>
+                <strong>{skill.name}</strong>
+                <Tag color="purple">{skill.id}</Tag>
+                <Tag variant="outlined">v{skill.version}</Tag>
+              </Space>
+              <div>
+                <Space wrap size={4}>
+                  {skill.requirementPatterns.map((p) => <Tag key={p} color="blue" variant="outlined">{p}</Tag>)}
+                  {skill.scopes.map((s) => <Tag key={s} color="green" variant="outlined">{s}</Tag>)}
+                </Space>
+              </div>
+              <div>
+                <Text type="secondary">
+                  影响 Step: {skill.stepIds.join(", ")}
+                  {skill.matchKeywords?.length ? `　·　关键词: ${skill.matchKeywords.slice(0, 8).join(", ")}${skill.matchKeywords.length > 8 ? "…" : ""}` : ""}
+                </Text>
+              </div>
+            </div>
+          ))
+        )}
+      </Card>
 
       <div className="settings-page__footer">
         <Space>

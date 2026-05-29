@@ -19,6 +19,7 @@ import {
 } from "../domain/workflow.js";
 import { recordMetric } from "../services/metricsService.js";
 import { getCurrentWorkspace } from "../services/workspaceService.js";
+import { getSkillStepSpec } from "../skills/skillRegistry.js";
 import {
   deriveRouterContext,
   moduleMappingInstructionAddon,
@@ -71,16 +72,30 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
   }
 
   const spec = agentSpecs[stepId];
-  // 动态扩展 module_mapping 的 instruction,基于当前 run 的 pattern/scope。
+
+  // 三层叠加 prompt:
+  // layer 1: agentSpecs 的基础 instruction
   let instruction = spec.instruction;
+  let outputContract = spec.outputContract;
+
+  // layer 2: stepRouter 的 scope/pattern 动态 addon
+  const ctx = deriveRouterContext(run);
   if (stepId === "module_mapping") {
-    const ctx = deriveRouterContext(run);
-    instruction = `${spec.instruction}\n${moduleMappingInstructionAddon(ctx)}`;
+    instruction = `${instruction}\n${moduleMappingInstructionAddon(ctx)}`;
+  }
+
+  // layer 3: Skill 注入 addon
+  const skillSpec = getSkillStepSpec(run, stepId);
+  if (skillSpec.instructionAddon) {
+    instruction = `${instruction}\n${skillSpec.instructionAddon}`;
+  }
+  if (skillSpec.outputContractAddon) {
+    outputContract = `${outputContract}\n${skillSpec.outputContractAddon}`;
   }
 
   const result = await runSimpleAgentRuntime(stepId, run, spec.schema, {
     instruction,
-    outputContract: spec.outputContract,
+    outputContract,
   });
 
   recordMetric({
@@ -94,7 +109,11 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
 
   return {
     ...(result.output as Record<string, unknown>),
-    runtimeTrace: result.trace,
+    runtimeTrace: {
+      ...result.trace,
+      selectedSkillId: skillSpec.skillId,
+      skillMatchReason: skillSpec.skillMatchReason,
+    },
   };
 }
 
@@ -117,9 +136,10 @@ async function runVerificationStep(run: WorkflowRun) {
     candidates: Array<{ label: string; available: boolean; argv: string[]; description: string; reason: string }>;
   }).candidates ?? [];
 
-  // 动态:基于 pattern/scope 决定哪些命令必选/可选。
+  // 动态:基于 pattern/scope + Skill 的 addon 决定哪些命令必选/可选。
   const ctx = deriveRouterContext(run);
-  const policy = verificationCommandPolicy(ctx);
+  const skillSpecForVerify = getSkillStepSpec(run, "verification");
+  const policy = verificationCommandPolicy(ctx, skillSpecForVerify.verificationPolicyAddon);
 
   const commandResults: VerificationCommandResult[] = [];
   const toolTraces = [detection];
@@ -226,6 +246,8 @@ async function runVerificationStep(run: WorkflowRun) {
         `检测到的脚本：${(detection.output as { detectedScripts: string[] }).detectedScripts.join(", ")}`,
       ],
       toolCalls: toolTraces,
+      selectedSkillId: skillSpecForVerify.skillId,
+      skillMatchReason: skillSpecForVerify.skillMatchReason,
     },
     runId: run.id,
   };
@@ -334,6 +356,8 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
     estimatedCost: 0,
   });
 
+  const skillSpecForWrite = getSkillStepSpec(run, "repo_write");
+
   return {
     ...parsed.data,
     runtimeTrace: {
@@ -344,6 +368,8 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
         `repo_write 真实写入 ${appliedChanges.length} 个文件到分支 ${branchName}`,
       ],
       toolCalls: toolTraces,
+      selectedSkillId: skillSpecForWrite.skillId,
+      skillMatchReason: skillSpecForWrite.skillMatchReason,
     },
   };
 }
