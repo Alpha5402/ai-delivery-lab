@@ -106,8 +106,23 @@ function persistRun(run: WorkflowRun) {
  */
 function commitRun(run: WorkflowRun) {
   run.updatedAt = now();
-  // 1. 先写 SQLite（source-of-truth）
-  persistRun(run);
+  // 1. 尝试写 SQLite（source-of-truth），失败记录日志但不阻断内存状态机。
+  //    内存缓存 + SSE 广播仍正常进行，避免持久化瞬时故障导致整个 workflow 卡死。
+  try {
+    persistRun(run);
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        scope: "workflow",
+        event: "persist.degraded",
+        runId: run.id,
+        message: err instanceof Error ? err.message : "unknown SQLite write error",
+        timestamp: new Date().toISOString(),
+      }),
+    );
+    // 标记本次 commit 持久化降级，方便调试和运维排查
+    (run as Record<string, unknown>)._persistDegraded = true;
+  }
   // 2. 再更新内存缓存
   runs.set(run.id, run);
   touchCache(run.id);
@@ -320,6 +335,20 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
 
   try {
     const run = getExistingRun(runId);
+
+    // ---- 先切换到 running，让 SSE 前端立刻看到进度 ----
+    run.steps = run.steps.map((current) =>
+      current.id === stepId
+        ? { ...current, status: "running" as const, startedAt: current.startedAt ?? now() }
+        : current,
+    );
+    commitRun(run);
+    workflowEventBus.emitStepEvent({
+      type: "step",
+      runId,
+      stepId,
+      phase: "started",
+    });
 
     // ---- 生成 → 校验 → (可选)修复一次 ----
     let output = await resolveStepOutput(run, stepId);

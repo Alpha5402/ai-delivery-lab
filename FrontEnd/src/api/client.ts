@@ -273,3 +273,33 @@ export function createQuickProjectWorkspace(draft: QuickProjectDraft) {
 export function getCurrentWorkspace() {
   return request<WorkspaceContext>("/workspaces/current");
 }
+
+// ---- Skills ----------------------------------------------------------------
+
+export type SkillSummary = {
+  id: string;
+  name: string;
+  version: string;
+  requirementPatterns: string[];
+  scopes: string[];
+  matchKeywords?: string[];
+  stepIds: string[];
+};
+
+export type SkillManifest = SkillSummary & {
+  match: { keywords?: string[]; fileGlobs?: string[]; routeHints?: string[] };
+  steps: Record<string, {
+    instructionAddon: string;
+    outputContractAddon?: string;
+    contextHints?: string[];
+    verificationPolicyAddon?: { required?: string[]; optional?: string[] };
+  }>;
+};
+
+export function listSkills() {
+  return request<SkillSummary[]>("/skills");
+}
+
+export function getSkill(skillId: string) {
+  return request<SkillManifest>(`/skills/${skillId}`);
+}

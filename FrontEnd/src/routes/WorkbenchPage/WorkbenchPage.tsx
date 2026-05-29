@@ -316,7 +316,7 @@ const runtimeStateCopy: Record<RuntimeStatus, { eyebrow: string; title: string; 
   success: {
     eyebrow: "步骤已完成",
     title: "当前步骤已完成",
-    description: "现在优先查看结果、补丁摘要、检查清单与下一步操作。介入记录已降级为历史上下文。",
+    description: "后端已自动推进到下一步骤。查看结果或选择重放，无需手动启动下一步。",
     cta: "从此步骤重放",
   },
   failed: {
@@ -1017,10 +1017,7 @@ function RuntimeStateBanner({
 
     if (status === "success") {
       return (
-        <Space>
-          {onSecondaryAction ? <Button type="primary" onClick={onSecondaryAction}>运行下一步</Button> : null}
-          <Button onClick={onPrimaryAction}>从此重放</Button>
-        </Space>
+        <Button type="primary" onClick={onPrimaryAction}>从此重放</Button>
       );
     }
 
@@ -1282,6 +1279,20 @@ function StateDrivenWorkspace({
   );
 }
 
+function SkillBadge({ step }: { step: StepRun }) {
+  const trace = (step.output as Record<string, unknown> | undefined)?.runtimeTrace as
+    | { selectedSkillId?: string }
+    | undefined;
+  const skillId = trace?.selectedSkillId;
+  if (!skillId) return null;
+
+  return (
+    <ContextSection title="命中 Skill">
+      <Tag color="purple">{skillId}</Tag>
+    </ContextSection>
+  );
+}
+
 function DynamicSidePanel({
   activeStep,
   requirement,
@@ -1302,6 +1313,7 @@ function DynamicSidePanel({
   if (activeStep.id === "clarification" || activeStep.id === "solution_design" || activeStep.id === "requirement_intake") {
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
+        <SkillBadge step={activeStep} />
         <ContextSection title="PM 输入 / 澄清">
           <Typography.Paragraph>{requirement.rawText}</Typography.Paragraph>
         </ContextSection>
@@ -1334,6 +1346,7 @@ function DynamicSidePanel({
       : [];
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
+        <SkillBadge step={activeStep} />
         <ContextSection title="上下文定位">
           <InlineList items={files} empty="等待智能体定位文件后展示代码上下文。" />
         </ContextSection>
@@ -1350,6 +1363,7 @@ function DynamicSidePanel({
   if (activeStep.id === "repo_write") {
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
+        <SkillBadge step={activeStep} />
         <ContextSection title="代码生成 / 写入">
           <RepositoryChanges repository={repository} result={repoResult} />
         </ContextSection>
@@ -1366,6 +1380,7 @@ function DynamicSidePanel({
   if (activeStep.id === "verification") {
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
+        <SkillBadge step={activeStep} />
         <ContextSection title="验证器 / 质量门">
           <TestResultPanel result={verification} />
         </ContextSection>
@@ -1386,6 +1401,7 @@ function DynamicSidePanel({
     const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
+        <SkillBadge step={activeStep} />
         <ContextSection title="PR 状态">
           <div className="runtime-sidecar-status">
             <Tag color={pr?.status === "ready" ? "success" : "blue"} variant="outlined">{formatRuntimeStatusValue(pr?.status)}</Tag>
@@ -1413,6 +1429,7 @@ function DynamicSidePanel({
 
   return (
     <Card className="runtime-panel runtime-telemetry-panel" title="执行遥测" bordered={false}>
+      <SkillBadge step={activeStep} />
       <div className="runtime-telemetry-grid">
         <Statistic title="智能体调用" value={metrics.calls} />
         <Statistic title="上下文 Token" value={metrics.inputTokens + metrics.outputTokens} />
@@ -1605,23 +1622,6 @@ export function WorkbenchPage() {
     }
   }
 
-  async function handleRunNextStep() {
-    if (!run || !activeStep) return;
-    const currentIndex = run.steps.findIndex((step) => step.id === activeStep.id);
-    const nextStep = run.steps[currentIndex + 1];
-    if (!nextStep) return;
-
-    try {
-      const nextRun = await runWorkflowStep(run.id, nextStep.id);
-      setRun(nextRun);
-      setAgentMetrics(await getAgentMetrics());
-      setErrorMessage("");
-    } catch (error) {
-      setApiStatus("error");
-      setErrorMessage(error instanceof Error ? error.message : "运行下一步失败，请确认后端服务可达。");
-    }
-  }
-
   async function handleRestore(snapshotId: string) {
     if (!run || !activeStep) return;
 
@@ -1764,9 +1764,7 @@ export function WorkbenchPage() {
               onSecondaryAction={
                 activeRuntimeStatus === "blocked"
                   ? () => runWorkflowStep(run.id, activeStep.id).then(setRun).catch(() => undefined)
-                  : activeRuntimeStatus === "success"
-                    ? handleRunNextStep
-                    : undefined
+                  : undefined
               }
               onWorkspaceViewChange={setWorkspaceView}
               repoResult={repoResult}
