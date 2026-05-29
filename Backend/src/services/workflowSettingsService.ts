@@ -11,9 +11,14 @@ import { workflowEventBus } from "./workflowEvents.js";
 
 /**
  * 默认执行模式（产品语义）：
- * - clarification、solution_design、code_generation、pull_request 默认需要人工确认；
- * - 其余步骤默认自动续跑。
- * 用户可在 Settings 页覆盖。
+ *  - 高风险/语义决策步骤(clarification、solution_design、code_generation、pull_request)
+ *    默认需要人工确认;
+ *  - 低风险/事实采集步骤(requirement_intake、module_mapping、repo_write、verification)
+ *    默认自动续跑,但都被 Quality Gate 二次约束:
+ *    · module_mapping: 文件不存在 → need-human;
+ *    · repo_write: planned 模式 → need-human, applied 才放行;
+ *    · verification: 任何命令 failed → repair / need-human。
+ *  用户可在 Settings 页覆盖。
  */
 export const defaultStepExecutionModes: Record<WorkflowStepId, StepExecutionMode> = {
   requirement_intake: "automatic",

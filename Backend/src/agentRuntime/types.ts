@@ -6,6 +6,10 @@ export const runtimeToolNameSchema = z.enum([
   "read_agent_guide",
   "git_status",
   "detect_test_commands",
+  "detect_workflow_commands",
+  "run_command",
+  "write_file",
+  "git_checkout_branch",
 ]);
 
 export const runtimeToolCallSchema = z.object({

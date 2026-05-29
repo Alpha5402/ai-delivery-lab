@@ -5,7 +5,9 @@ import { runWorkflowStepAgent } from "../agents/workflowStepAgent.js";
 import {
   type ClarificationOutput,
   type InterventionMessage,
+  type QualityGateResult,
   type RequirementDraft,
+  type StepCheck,
   type StepRun,
   type WorkflowRun,
   type WorkflowStepId,
@@ -17,6 +19,7 @@ import { getCurrentWorkspace } from "./workspaceService.js";
 import { deleteWorkflowRunFromStore, getStoredWorkflowRun, saveWorkflowRunToStore } from "./workspaceStore.js";
 import { workflowEventBus } from "./workflowEvents.js";
 import { getStepExecutionMode } from "./workflowSettingsService.js";
+import { runStepVerifier, type VerifierResult } from "./stepVerifiers.js";
 
 const runs = new Map<string, WorkflowRun>();
 
@@ -313,40 +316,120 @@ export async function runStep(runId: string, stepId: WorkflowStepId) {
 
 async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
   const stepIndex = stepOrder.indexOf(stepId);
+  const MAX_REPAIR_ATTEMPTS = 1;
 
   try {
     const run = getExistingRun(runId);
-    const output = await resolveStepOutput(run, stepId);
+
+    // ---- 生成 → 校验 → (可选)修复一次 ----
+    let output = await resolveStepOutput(run, stepId);
+    const workspace = getCurrentWorkspace() ?? undefined;
+    let verifier: VerifierResult = runStepVerifier(stepId, output, workspace);
+    let repairAttempts = 0;
+    const repairLogs: string[] = [];
+
+    while (
+      verifier.qualityGate.decision === "repair" &&
+      repairAttempts < MAX_REPAIR_ATTEMPTS
+    ) {
+      repairAttempts += 1;
+      repairLogs.push(`触发自动修复 (attempt ${repairAttempts}/${MAX_REPAIR_ATTEMPTS})`);
+      for (const reason of verifier.qualityGate.reasons) {
+        repairLogs.push(`  · 待修复: ${reason}`);
+      }
+      // 简化版 repair 策略:把上一轮 output + reasons 作为 followUp 上下文塞回 agent。
+      // clarification 走 ClarifierAgent 的 follow-up 分支;其他 step 暂时直接重跑(由 LLM 自身在新 prompt 中重试)。
+      try {
+        const followUp = stepId === "clarification"
+          ? { previousOutput: output, reasons: verifier.qualityGate.reasons }
+          : undefined;
+        output = await resolveStepOutput(run, stepId, followUp ? { followUp } : undefined);
+        verifier = runStepVerifier(stepId, output, workspace);
+        verifier.qualityGate.repairAttempts = repairAttempts;
+      } catch (error) {
+        repairLogs.push(`修复执行失败: ${error instanceof Error ? error.message : "unknown"}`);
+        break;
+      }
+    }
 
     const latest = getExistingRun(runId);
     const mode = getStepExecutionMode(stepId);
+    const gateDecision = verifier.qualityGate.decision;
+
+    // 真正决定是否自动续跑的复合条件:
+    //  - 配置允许 automatic
+    //  - 且 quality gate 判定 auto-continue
+    const shouldAutoContinue = mode === "automatic" && gateDecision === "auto-continue";
+
+    // gate 即使配置 automatic,只要不是 auto-continue 就要落到对应中间态:
+    //  - need-human / repair / block → waiting-human(repair 由专门循环处理,见 P1.4)
+    const nextStatus: StepRun["status"] = shouldAutoContinue
+      ? "success"
+      : gateDecision === "block"
+        ? "failed"
+        : "waiting-human";
+
     const nextStepId = stepOrder[stepIndex + 1] ?? stepId;
-    latest.activeStepId = mode === "manual-confirmation" ? stepId : nextStepId;
+    latest.activeStepId = shouldAutoContinue ? nextStepId : stepId;
+
+    const gateLogs = buildGateLogs(verifier.qualityGate, mode);
+
     latest.steps = latest.steps.map((current, index) => {
       if (current.id === stepId) {
+        const repairPhases = repairAttempts > 0 ? [{
+          id: `${stepId}-repair-${Date.now()}`,
+          kind: "repair" as const,
+          name: `自动修复 ${repairAttempts} 次`,
+          status: gateDecision === "auto-continue" ? "success" as const : "failed" as const,
+          finishedAt: now(),
+          message: repairLogs.join("; "),
+        }] : [];
         return {
           ...current,
-          status: mode === "manual-confirmation" ? "waiting-human" : "success",
+          status: nextStatus,
           output,
           finishedAt: now(),
+          checks: verifier.checks,
+          qualityGate: verifier.qualityGate,
+          repairAttempts: (current.repairAttempts ?? 0) + repairAttempts,
+          phases: [
+            ...(current.phases ?? []),
+            {
+              id: `${stepId}-generate-${Date.now()}`,
+              kind: "generate",
+              name: `${stepAgents[stepId]} 生成产物`,
+              status: "success",
+              finishedAt: now(),
+            },
+            ...repairPhases,
+            {
+              id: `${stepId}-gate-${Date.now()}`,
+              kind: "gate",
+              name: "Quality Gate 决策",
+              status: gateDecision === "auto-continue" ? "success" : "failed",
+              finishedAt: now(),
+              message: verifier.qualityGate.reasons.join("; "),
+            },
+          ],
           logs: [
             ...current.logs,
             `${current.agent} finished`,
-            mode === "manual-confirmation" ? `${current.agent} waiting for user` : "Runtime auto-continue enabled",
+            ...repairLogs,
+            ...gateLogs,
           ],
-          interventions: mode === "manual-confirmation"
+          interventions: nextStatus === "waiting-human"
             ? [...(current.interventions ?? []), {
               id: `${stepId}-agent-${Date.now()}`,
               stepId,
               role: "agent",
-              content: "我已生成当前 Step 的结构化结果，请确认或继续补充需求。",
+              content: buildGateInterventionMessage(verifier.qualityGate),
               createdAt: now(),
             }]
             : current.interventions,
         };
       }
 
-      if (mode === "automatic" && index === stepIndex + 1) {
+      if (shouldAutoContinue && index === stepIndex + 1) {
         return { ...current, input: output };
       }
 
@@ -358,10 +441,15 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
       type: "step",
       runId,
       stepId,
-      phase: mode === "manual-confirmation" ? "waiting-human" : "completed",
+      phase: nextStatus === "success"
+        ? "completed"
+        : nextStatus === "failed"
+          ? "failed"
+          : "waiting-human",
+      message: verifier.qualityGate.reasons[0],
     });
 
-    if (mode === "automatic") {
+    if (shouldAutoContinue) {
       await advanceWorkflow(runId);
     }
   } catch (error) {
@@ -386,6 +474,36 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
       message: error instanceof Error ? error.message : undefined,
     });
   }
+}
+
+function buildGateLogs(gate: QualityGateResult, mode: "automatic" | "manual-confirmation"): string[] {
+  const decisionLabel: Record<QualityGateResult["decision"], string> = {
+    "auto-continue": "Quality Gate: auto-continue ✓",
+    "need-human": "Quality Gate: 需要人工确认 ⚠",
+    "repair": "Quality Gate: 触发自动修复 ↻",
+    "block": "Quality Gate: 阻断 ✗",
+  };
+  const out = [decisionLabel[gate.decision]];
+  for (const reason of gate.reasons) {
+    out.push(`  · ${reason}`);
+  }
+  if (mode === "automatic" && gate.decision !== "auto-continue") {
+    out.push("配置为 automatic,但 Quality Gate 未通过,改为等待人工确认");
+  }
+  return out;
+}
+
+function buildGateInterventionMessage(gate: QualityGateResult): string {
+  if (gate.decision === "auto-continue") {
+    return "我已生成当前 Step 的结构化结果,Quality Gate 通过,等待人工确认或自动续跑。";
+  }
+  if (gate.decision === "block") {
+    return `当前 Step 被阻断: ${gate.reasons.join("; ")}`;
+  }
+  if (gate.decision === "repair") {
+    return `当前 Step 校验未通过,准备触发一次自动修复: ${gate.reasons.join("; ")}`;
+  }
+  return `当前 Step 校验需要人工确认: ${gate.reasons.join("; ")}`;
 }
 
 export async function addInterventionAndRegenerate(runId: string, stepId: WorkflowStepId, message: string) {
@@ -545,13 +663,23 @@ async function advanceWorkflow(runId: string) {
   }
 }
 
-async function resolveStepOutput(run: WorkflowRun, stepId: WorkflowStepId) {
+async function resolveStepOutput(
+  run: WorkflowRun,
+  stepId: WorkflowStepId,
+  options?: { followUp?: { previousOutput: unknown; reasons: string[] } },
+) {
   if (stepId === "requirement_intake") {
     return getStepOutput<RequirementDraft>(run, "requirement_intake");
   }
 
   if (stepId === "clarification") {
     const requirement = getStepOutput<RequirementDraft>(run, "requirement_intake");
+    if (options?.followUp) {
+      return runClarifierAgent(requirement, {
+        previousOutput: options.followUp.previousOutput as ClarificationOutput,
+        reasons: options.followUp.reasons,
+      });
+    }
     return runClarifierAgent(requirement);
   }
 
