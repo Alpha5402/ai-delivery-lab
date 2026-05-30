@@ -3,6 +3,7 @@ import { callJsonLlmWithSchema } from "../services/llmClient.js";
 import { getCurrentWorkspace } from "../services/workspaceService.js";
 import type { WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
 import { stepAgents } from "../domain/workflow.js";
+import { buildRuntimeMemoryContext } from "../services/workflowMemory.js";
 import { runRuntimeTool } from "./toolRegistry.js";
 import type { AgentRuntimeTrace, RuntimeToolCall } from "./types.js";
 
@@ -44,6 +45,9 @@ export async function runSimpleAgentRuntime<T>(
     toolCalls.push(await runRuntimeTool(workspace, "git_status"));
   }
 
+  // 构建 Runtime Memory 上下文
+  const runtimeMemory = buildRuntimeMemoryContext(run, stepId);
+
   const trace: AgentRuntimeTrace = {
     runtime: "simple-agent-runtime",
     workspaceId: workspace.id,
@@ -53,6 +57,7 @@ export async function runSimpleAgentRuntime<T>(
       `扫描文件数：${workspace.repositoryScan.filesInspected}`,
       `技术栈：${workspace.repositoryScan.stack.join(" / ")}`,
       `当前 Step：${stepId}`,
+      `Runtime Memory: ${runtimeMemory.allUserDecisions.length} 条用户决策`,
     ],
     toolCalls,
   };
@@ -64,6 +69,9 @@ export async function runSimpleAgentRuntime<T>(
         `你是 ${stepAgents[stepId]}，运行在一个简易 Claude Code-like Agent Runtime 中。`,
         "你必须使用中文输出，路径、命令、代码标识符可以保留英文。",
         "你必须基于 runtime 工具观测结果、readme-for-agent.md 和 workflow JSON 做判断。",
+        "你必须优先遵守 runtimeMemory 中用户明确确认/修正的约束。",
+        "如果用户反馈与你原计划冲突，以用户反馈为准。",
+        "不要重复提出已被用户回答的问题。",
         "不要声称已经执行没有出现在 runtime.toolCalls 中的工具或命令。",
         "不要编造文件路径；优先使用 runtime.toolCalls 中 list_files/read_agent_guide 暴露的信息。",
         "每个 Step 仍然必须只返回满足 schema 的 JSON object。",
@@ -77,6 +85,7 @@ export async function runSimpleAgentRuntime<T>(
         stepId,
         workflow: run,
         runtime: trace,
+        runtimeMemory: runtimeMemory.summary,
       }),
     },
   ], schema, { label: stepAgents[stepId] });

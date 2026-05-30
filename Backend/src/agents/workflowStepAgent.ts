@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import { runSimpleAgentRuntime } from "../agentRuntime/simpleAgentRuntime.js";
 import { runRuntimeTool } from "../agentRuntime/toolRegistry.js";
+import { env } from "../config/env.js";
 import {
   type CodeGenerationPlan,
   type FileChange,
@@ -69,6 +70,11 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
     if (applied) {
       return applied;
     }
+  }
+
+  // pull_request: 优先真实执行 git 操作 + GitHub API 创建 PR
+  if (stepId === "pull_request") {
+    return runPullRequestStep(run);
   }
 
   const spec = agentSpecs[stepId];
@@ -371,5 +377,178 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
       selectedSkillId: skillSpecForWrite.skillId,
       skillMatchReason: skillSpecForWrite.skillMatchReason,
     },
+  };
+}
+
+// ---- Pull Request Step: 真实 git 操作 + GitHub API ----
+
+async function runPullRequestStep(run: WorkflowRun): Promise<Record<string, unknown> & { runtimeTrace: unknown }> {
+  const workspace = getCurrentWorkspace();
+  if (!workspace) {
+    throw new Error("No workspace is available for pull_request step.");
+  }
+
+  const toolTraces: Array<Awaited<ReturnType<typeof runRuntimeTool>>> = [];
+  const checklist: string[] = [];
+  const title = buildPrTitle(run);
+
+  // 1. 检查是否是 git 仓库
+  if (!workspace.hasRepository) {
+    return buildPrResult({
+      run, title, url: "pending://pull-request", status: "draft",
+      checklist: ["工作区不是 git 仓库，无法创建 PR"], toolTraces,
+    });
+  }
+
+  // 2. 设置 git identity
+  const identityResult = await runRuntimeTool(workspace, "git_config_identity");
+  toolTraces.push(identityResult);
+  if (!(identityResult.output as { ok?: boolean }).ok) {
+    checklist.push("Git 身份未配置: GIT_USER_NAME / GIT_USER_EMAIL");
+  } else {
+    checklist.push("Git 身份已配置");
+  }
+
+  // 3. 创建/切换分支
+  const branchName = deriveBranchName(run);
+  const branchResult = await runRuntimeTool(workspace, "git_create_branch", { branch: branchName });
+  toolTraces.push(branchResult);
+  const branchOut = branchResult.output as { ok?: boolean; branch?: string; reason?: string };
+  if (!branchOut.ok) {
+    return buildPrResult({
+      run, title, url: "pending://pull-request", status: "draft",
+      checklist: [...checklist, `创建分支失败: ${branchOut.reason}`], toolTraces,
+    });
+  }
+  checklist.push(`分支: ${branchOut.branch}`);
+
+  // 4. 提交变更
+  const commitResult = await runRuntimeTool(workspace, "git_commit_changes", { message: title });
+  toolTraces.push(commitResult);
+  const commitOut = commitResult.output as { ok?: boolean; committed?: boolean; reason?: string; filesChanged?: number };
+  if (commitOut.committed) {
+    checklist.push(`已提交 ${commitOut.filesChanged} 个文件`);
+  } else {
+    checklist.push(commitOut.reason ?? "没有可提交的变更");
+  }
+
+  // 5. Push
+  const pushResult = await runRuntimeTool(workspace, "git_push_branch", { branch: branchName });
+  toolTraces.push(pushResult);
+  const pushOut = pushResult.output as { ok?: boolean; reason?: string };
+
+  // 6. 创建 GitHub PR
+  let prOut: Record<string, unknown> = {};
+  if (commitOut.committed) {
+    const prBody = buildPrBody(run);
+    const prResult = await runRuntimeTool(workspace, "github_create_pr", {
+      title, body: prBody, head: branchName, base: env.GITHUB_BASE_BRANCH,
+    });
+    toolTraces.push(prResult);
+    prOut = prResult.output as Record<string, unknown>;
+  }
+
+  const prOk = prOut.ok === true;
+  const prUrl = (prOut.url as string) || "pending://pull-request";
+  const prNumber = prOut.number as number | undefined;
+
+  if (prOk) {
+    checklist.push(`PR 已创建: ${prUrl}`);
+  } else if (prOut.reason) {
+    checklist.push(`PR 创建失败: ${prOut.reason}`);
+  } else if (pushOut.ok) {
+    checklist.push("分支已推送，PR 创建失败或未配置 token");
+  } else if (!pushOut.ok) {
+    checklist.push(`Push 失败: ${pushOut.reason}`);
+  }
+
+  if (!pushOut.ok && !commitOut.committed) {
+    checklist.push("无变更且 push 失败，请检查工作区");
+  }
+
+  return buildPrResult({
+    run, title, url: prUrl,
+    status: prOk ? "ready" : "draft",
+    checklist, branch: branchName, prNumber, pushed: pushOut.ok === true, toolTraces,
+  });
+}
+
+function buildPrTitle(run: WorkflowRun): string {
+  const title = run.title || "workflow auto PR";
+  return title.slice(0, 80).replace(/["`$\\]/g, "");
+}
+
+function buildPrBody(run: WorkflowRun): string {
+  const sections: string[] = [];
+  const requirement = run.steps.find((s) => s.id === "requirement_intake")?.output as Record<string, unknown> | undefined;
+  const clarification = run.steps.find((s) => s.id === "clarification")?.output as Record<string, unknown> | undefined;
+  const solution = run.steps.find((s) => s.id === "solution_design")?.output as Record<string, unknown> | undefined;
+  const verification = run.steps.find((s) => s.id === "verification")?.output as Record<string, unknown> | undefined;
+  const repoWrite = run.steps.find((s) => s.id === "repo_write")?.output as Record<string, unknown> | undefined;
+
+  if (requirement?.rawText) sections.push(`## Requirement\n${requirement.rawText}`);
+  if (clarification) {
+    const decisions = clarification.decisions as Array<{ title: string; finalAnswer: string }> | undefined;
+    if (decisions?.length) sections.push("## Clarification Decisions\n" + decisions.map((d) => `- **${d.title}**: ${d.finalAnswer}`).join("\n"));
+    if (clarification.summary) sections.push(`## Clarification Summary\n${clarification.summary}`);
+  }
+  if (solution) {
+    const ac = solution.acceptanceCriteria as string[] | undefined;
+    if (ac?.length) sections.push("## Acceptance Criteria\n" + ac.map((a) => `- ${a}`).join("\n"));
+  }
+  const files = (repoWrite as { filesChanged?: Array<{ path: string }> })?.filesChanged;
+  if (files?.length) sections.push("## Files Changed\n" + files.map((f) => `- ${f.path}`).join("\n"));
+  if (verification) {
+    const commands = verification.commands as Array<{ label: string; status: string }> | undefined;
+    if (commands?.length) sections.push("## Verification\n" + commands.map((c) => `- ${c.label}: ${c.status}`).join("\n"));
+  }
+  sections.push("\n---\n🤖 Generated with [Conduit Delivery Lab](https://github.com/Alpha5402/conduit-realworld-example-app)");
+  return sections.join("\n\n").slice(0, 5_000);
+}
+
+function deriveBranchName(run: WorkflowRun): string {
+  const slug = (run.title || "workflow")
+    .replace(/[^A-Za-z0-9一-鿿\s_-]/g, "")
+    .replace(/\s+/g, "-").toLowerCase().slice(0, 30);
+  const shortId = run.id.replace(/[^A-Za-z0-9]/g, "").slice(0, 8);
+  return `feature/${shortId}-${slug}`;
+}
+
+function buildPrResult(opts: {
+  run: WorkflowRun;
+  title: string;
+  url: string;
+  status: "draft" | "ready";
+  checklist: string[];
+  branch?: string;
+  prNumber?: number;
+  pushed?: boolean;
+  toolTraces: Array<Awaited<ReturnType<typeof runRuntimeTool>>>;
+}): Record<string, unknown> & { runtimeTrace: unknown } {
+  recordMetric({
+    agent: stepAgents.pull_request,
+    calls: 1,
+    inputTokens: 0,
+    outputTokens: 0,
+    latencyMs: opts.toolTraces.reduce((acc, c) => acc + c.durationMs, 0),
+    estimatedCost: 0,
+  });
+
+  return {
+    title: opts.title,
+    url: opts.url,
+    status: opts.status,
+    checklist: opts.checklist,
+    branch: opts.branch,
+    prNumber: opts.prNumber,
+    pushed: opts.pushed,
+    runtimeTrace: {
+      runtime: "simple-agent-runtime" as const,
+      workspaceId: getCurrentWorkspace()?.id ?? "",
+      workspaceDir: getCurrentWorkspace()?.workspaceDir,
+      observations: opts.checklist,
+      toolCalls: opts.toolTraces,
+    },
+    runId: opts.run.id,
   };
 }

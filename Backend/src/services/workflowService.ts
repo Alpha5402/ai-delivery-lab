@@ -19,6 +19,7 @@ import { getCurrentWorkspace } from "./workspaceService.js";
 import { deleteWorkflowRunFromStore, getStoredWorkflowRun, saveWorkflowRunToStore } from "./workspaceStore.js";
 import { workflowEventBus } from "./workflowEvents.js";
 import { getStepExecutionMode } from "./workflowSettingsService.js";
+import { buildRuntimeMemoryContext } from "./workflowMemory.js";
 import { runStepVerifier, type VerifierResult } from "./stepVerifiers.js";
 
 const runs = new Map<string, WorkflowRun>();
@@ -388,7 +389,13 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
     // 真正决定是否自动续跑的复合条件:
     //  - 配置允许 automatic
     //  - 且 quality gate 判定 auto-continue
-    const shouldAutoContinue = mode === "automatic" && gateDecision === "auto-continue";
+    //  - 特殊规则: clarification 产出 clarificationComplete=true 时，即使配置 manual 也自动推进
+    const isClarificationComplete =
+      stepId === "clarification" &&
+      (output as ClarificationOutput).clarificationComplete === true &&
+      gateDecision === "auto-continue";
+    const shouldAutoContinue =
+      (mode === "automatic" && gateDecision === "auto-continue") || isClarificationComplete;
 
     // gate 即使配置 automatic,只要不是 auto-continue 就要落到对应中间态:
     //  - need-human / repair / block → waiting-human(repair 由专门循环处理,见 P1.4)
@@ -703,19 +710,36 @@ async function resolveStepOutput(
 
   if (stepId === "clarification") {
     const requirement = getStepOutput<RequirementDraft>(run, "requirement_intake");
-    if (options?.followUp) {
+    const clarificationStep = run.steps.find((s) => s.id === "clarification");
+    const runtimeMemory = buildRuntimeMemoryContext(run, "clarification");
+
+    // 收集该 step 上的用户介入记录
+    const userInterventions = (clarificationStep?.interventions ?? [])
+      .filter((m) => m.role === "user")
+      .map((m) => m.content);
+
+    // 上一轮的产出（如果有）
+    const previousOutput = (clarificationStep?.output ?? options?.followUp?.previousOutput) as
+      | ClarificationOutput
+      | undefined;
+
+    // 只要有用户记录或上一轮产出就走进 followUp 分支
+    if (options?.followUp || userInterventions.length > 0 || previousOutput) {
       return runClarifierAgent(requirement, {
-        previousOutput: options.followUp.previousOutput as ClarificationOutput,
-        reasons: options.followUp.reasons,
+        previousOutput: (options?.followUp?.previousOutput as ClarificationOutput) ?? previousOutput,
+        reasons: options?.followUp?.reasons,
+        userInterventions: userInterventions.length > 0 ? userInterventions : undefined,
+        runtimeMemory,
       });
     }
-    return runClarifierAgent(requirement);
+    return runClarifierAgent(requirement, { runtimeMemory });
   }
 
   if (stepId === "solution_design") {
     const requirement = getStepOutput<RequirementDraft>(run, "requirement_intake");
     const clarification = getStepOutput<ClarificationOutput>(run, "clarification");
-    return runPlannerAgent(requirement, clarification);
+    const runtimeMemory = buildRuntimeMemoryContext(run, "solution_design");
+    return runPlannerAgent(requirement, clarification, { runtimeMemory });
   }
 
   return runWorkflowStepAgent(stepId, run);

@@ -17,7 +17,7 @@ const { Title, Paragraph, Text } = Typography;
 
 const modeOptions: { label: string; value: WorkflowStepExecutionMode }[] = [
   { label: "自动续跑", value: "automatic" },
-  { label: "需要确认", value: "manual-confirmation" },
+  { label: "待审核", value: "manual-confirmation" },
 ];
 
 const modeDescription: Record<WorkflowStepId, string> = {
@@ -107,14 +107,14 @@ export function SettingsPage() {
       <div className="settings-page__header">
         <div>
           <Title level={3} style={{ marginBottom: 4 }}>Workflow 执行模式</Title>
-          <Text type="secondary">配置每个步骤是「自动续跑」还是「等待人工确认」。</Text>
+          <Text type="secondary">配置每个步骤是「自动续跑」还是「待审核」。</Text>
         </div>
         <Link className="settings-page__back" to="/dashboard">← 返回项目列表</Link>
       </div>
 
       <Paragraph className="settings-page__intro">
-        当某步标记为「需要确认」时，Workflow 在该步骤完成后会停在 <Text code>waiting-human</Text> 状态，
-        直到你在工作台显式点击「确认并继续」。修改在保存后即时生效，对后续创建 / 推进的 run 都会应用。
+        当某步标记为「待审核」时，Workflow 在该步骤完成后会停在 <Text code>waiting-human</Text> 状态，
+        直到你在工作台点击「确认并继续」。修改在保存后即时生效，对后续创建 / 推进的 run 都会应用。
       </Paragraph>
 
       {errorText && (

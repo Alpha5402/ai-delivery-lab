@@ -180,8 +180,26 @@ src/
 - **LLM retry harness**: `callJsonLlmWithSchema()` retries up to 2 times on JSON parse failure or Zod validation failure, feeding the error back to the model
 - **Deterministic verification after LLM output**: `stepVerifiers.ts` runs factual checks (file existence, confidence thresholds, command trace presence) after Zod schema validation; quality gate decisions (`auto-continue` / `need-human` / `repair` / `block`) gate the workflow state machine
 - **Scope-aware routing**: `stepRouter.ts` reads `RequirementDraft.pattern` and `SolutionDsl.scope` to tailor agent instructions and verification command policies per scope (frontend/backend/fullstack)
+- **Real verification**: `verification` step executes actual typecheck/lint/test/build commands via `run_command` tool; results come from real command traces, not LLM self-declaration
+- **Real PR creation**: `pull_request` step performs git config → create branch → commit → push → GitHub API PR creation when credentials are configured; falls back to `pending://pull-request` without tokens
 - **No client-side state machine**: The backend is the sole source of truth; the frontend is purely presentational with SSE-driven updates
 - **Eventual consistency for SQLite**: Workflow runs are persisted to SQLite via `workspaceStore.ts` but the in-memory Map is the primary read source during active sessions
+
+## Git / GitHub 配置
+
+真实 PR 创建和 git 操作需要以下环境变量（见 `.env.example`）：
+
+```env
+GIT_USER_NAME=            # commit author name
+GIT_USER_EMAIL=           # commit author email
+GITHUB_TOKEN=             # GitHub fine-grained token (需 contents r/w + pull requests r/w)
+# GITHUB_OWNER=           # 无法从 remote 推断时手动指定
+# GITHUB_REPO=            # 同上
+GITHUB_BASE_BRANCH=main
+GITHUB_REMOTE=origin
+```
+
+Token 获取: GitHub Settings → Developer settings → Fine-grained tokens → 选择目标仓库 → Contents: Read and Write + Pull requests: Read and Write。不推荐使用密码。所有敏感信息仅从 `.env` 读取，不进入日志、不进入版本控制。
 
 ## Skill / Agent / Orchestrator 分层架构
 

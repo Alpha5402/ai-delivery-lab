@@ -10,6 +10,11 @@ export const runtimeToolNameSchema = z.enum([
   "run_command",
   "write_file",
   "git_checkout_branch",
+  "git_config_identity",
+  "git_create_branch",
+  "git_commit_changes",
+  "git_push_branch",
+  "github_create_pr",
 ]);
 
 export const runtimeToolCallSchema = z.object({

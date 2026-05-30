@@ -81,7 +81,19 @@ function decide(
  */
 export function verifyClarification(output: ClarificationOutput): VerifierResult {
   const checks: StepCheck[] = [];
+  const openQuestions = output.questions.filter((q) => q.status !== "resolved");
 
+  // 1. clarificationComplete 信号检查
+  if (output.clarificationComplete) {
+    checks.push({
+      id: "clarification.complete",
+      type: "factual",
+      status: "passed",
+      message: "Agent 判定澄清已完成",
+    });
+  }
+
+  // 2. confidence 检查
   if (output.confidence < CLARIFICATION_CONFIDENCE_FLOOR) {
     checks.push({
       id: "clarification.confidence",
@@ -99,7 +111,8 @@ export function verifyClarification(output: ClarificationOutput): VerifierResult
     });
   }
 
-  const unanswered = output.questions.filter(
+  // 3. 开放问题检查
+  const unanswered = openQuestions.filter(
     (q) => !q.answer || q.answer.trim().length === 0,
   );
   const highRiskUnanswered = unanswered.filter((q) => q.riskIfUnanswered.trim().length > 0);
@@ -114,17 +127,67 @@ export function verifyClarification(output: ClarificationOutput): VerifierResult
     });
   }
 
-  if (output.questions.length === 0) {
+  // 4. decisions 的存在表示有实质性产出
+  if (output.decisions.length > 0) {
     checks.push({
-      id: "clarification.no_questions",
+      id: "clarification.decisions",
       type: "factual",
-      status: "warning",
-      message: "Clarifier 没有产生任何澄清问题,可能信息不足",
+      status: "passed",
+      message: `已产出 ${output.decisions.length} 个确认决策`,
     });
   }
 
-  // clarification 允许一次自动追问(由 workflowService 的 repair 循环驱动);
-  // 仍未达标则 need-human。
+  if (openQuestions.length === 0 && output.questions.length === 0) {
+    checks.push({
+      id: "clarification.no_questions",
+      type: "factual",
+      status: output.clarificationComplete ? "passed" : "warning",
+      message: output.clarificationComplete
+        ? "澄清已完成, 所有问题已解决"
+        : "Clarifier 没有产生开放问题",
+    });
+  }
+
+  // 5. Gate 决策: complete + confidence OK + 无高风险 → auto-continue
+  const hasFailed = checks.some((c) => c.status === "failed");
+  const isCompleteAndClean =
+    output.clarificationComplete &&
+    openQuestions.length === 0 &&
+    output.confidence >= CLARIFICATION_CONFIDENCE_FLOOR &&
+    !hasFailed;
+
+  if (isCompleteAndClean) {
+    return {
+      checks,
+      qualityGate: {
+        decision: "auto-continue",
+        reasons: ["澄清已完成, 所有问题已解决, 可进入方案设计"],
+        confidence: output.confidence,
+        repairAttempts: 0,
+      },
+    };
+  }
+
+  // 有真正未回答的开放问题 → need-human
+  if (unanswered.length > 0 && highRiskUnanswered.length > 0) {
+    checks.push({
+      id: "clarification.open_questions",
+      type: "factual",
+      status: "warning",
+      message: `仍有 ${highRiskUnanswered.length} 个高风险未回答问题需用户审核`,
+    });
+    return {
+      checks,
+      qualityGate: {
+        decision: "need-human",
+        reasons: [`${highRiskUnanswered.length} 个高风险问题待审核`],
+        confidence: output.confidence,
+        repairAttempts: 0,
+      },
+    };
+  }
+
+  // 其他情况: 沿用通用 decide 逻辑
   return { checks, qualityGate: decide(checks, { repairableOnFail: true }) };
 }
 

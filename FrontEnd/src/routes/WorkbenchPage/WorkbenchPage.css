@@ -1150,29 +1150,6 @@
   min-width: 0;
 }
 
-.clarification-question section {
-  display: grid;
-  gap: 6px;
-}
-
-.clarification-question h4 {
-  color: #101828;
-  font-size: 14px;
-  font-weight: 700;
-  margin: 0;
-}
-
-.clarification-question p {
-  color: #101828;
-  font-weight: 400;
-  margin: 0;
-}
-
-.clarification-question small {
-  color: #667085;
-  line-height: 1.5;
-}
-
 .intervention-composer {
   background: #fff;
   border: 1px solid #d0d5dd;
