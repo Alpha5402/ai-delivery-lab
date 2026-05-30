@@ -97,14 +97,42 @@ export const requirementDraftSchema = z.object({
   targetRepo: z.literal("conduit"),
 });
 
+/** 已解决的澄清决策，供 downstream 消费 */
+const clarificationDecisionSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  question: z.string().min(1),
+  finalAnswer: z.string().min(1),
+  source: z.enum(["agent-inferred", "user-confirmed"]).default("user-confirmed"),
+});
+
+/** 澄清问题——只包含仍需用户处理的开放问题 */
+const clarificationQuestionSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  question: z.string().min(1),
+  answer: z.string(),
+  riskIfUnanswered: z.string().min(1),
+  status: z.enum(["open", "resolved"]).default("open"),
+  responseControl: z.object({
+    type: z.enum(["single", "multiple"]),
+    options: z.array(z.object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      description: z.string().optional(),
+    })).min(1),
+    allowCustom: z.boolean().optional(),
+  }).optional(),
+});
+
 export const clarificationOutputSchema = z.object({
   summary: z.string().min(1),
-  questions: z.array(z.object({
-    id: z.string().min(1),
-    question: z.string().min(1),
-    answer: z.string(),
-    riskIfUnanswered: z.string().min(1),
-  })),
+  /** 已确认的决策/规则，不再需要用户审核 */
+  decisions: z.array(clarificationDecisionSchema).default([]),
+  /** 仍需用户处理的开放问题 */
+  questions: z.array(clarificationQuestionSchema).default([]),
+  /** Agent 判定澄清是否已完成——true 表示可以推进到下一步 */
+  clarificationComplete: z.boolean().default(false),
   confidence: z.number().min(0).max(1),
 });
 
@@ -216,6 +244,14 @@ export const pullRequestResultSchema = z.object({
   url: z.string().min(1),
   status: z.enum(["draft", "ready"]),
   checklist: z.array(z.string().min(1)),
+  /** 实际创建的分支名 */
+  branch: z.string().optional(),
+  /** push 后的 commit SHA */
+  commitSha: z.string().optional(),
+  /** GitHub PR number */
+  prNumber: z.number().optional(),
+  /** 是否已 push 到 remote */
+  pushed: z.boolean().optional(),
 });
 
 /**
@@ -287,6 +323,7 @@ export const createInterventionSchema = z.object({
 export type StepStatus = z.infer<typeof stepStatusSchema>;
 export type WorkflowStepId = z.infer<typeof workflowStepIdSchema>;
 export type RequirementDraft = z.infer<typeof requirementDraftSchema>;
+export type ClarificationDecision = z.infer<typeof clarificationDecisionSchema>;
 export type ClarificationOutput = z.infer<typeof clarificationOutputSchema>;
 export type SolutionDsl = z.infer<typeof solutionDslSchema>;
 export type ModuleMapping = z.infer<typeof moduleMappingSchema>;

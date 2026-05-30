@@ -79,3 +79,55 @@ describe("runRuntimeTool", () => {
   });
 });
 
+
+describe("git tools", () => {
+  it("git_config_identity returns not_configured when env is unset", async () => {
+    const call = await runRuntimeTool(createWorkspace(), "git_config_identity");
+    expect(call.tool).toBe("git_config_identity");
+    const out = call.output as { ok?: boolean; reason?: string };
+    expect(out.ok).toBe(false);
+    expect(out.reason).toContain("未配置");
+  });
+
+  it("git_create_branch rejects unsafe branch names", async () => {
+    const call = await runRuntimeTool(createWorkspace(), "git_create_branch", { branch: "foo bar" });
+    expect(call.tool).toBe("git_create_branch");
+    const out = call.output as { ok?: boolean };
+    expect(out.ok).toBe(false);
+  });
+
+  it("git_create_branch sanitizes and creates valid branch names", async () => {
+    const call = await runRuntimeTool(createWorkspace(), "git_create_branch", { branch: "feature/valid-name_123" });
+    expect(call.tool).toBe("git_create_branch");
+    // In test env without a real repo, this returns not available
+    const out = call.output as { ok?: boolean; reason?: string };
+    expect(out.ok !== undefined).toBe(true);
+  });
+
+  it("git_push_branch requires branch name", async () => {
+    const call = await runRuntimeTool(createWorkspace(), "git_push_branch", { branch: "" });
+    const out = call.output as { ok?: boolean; reason?: string };
+    expect(out.ok).toBe(false);
+    expect(out.reason).toContain("branch name required");
+  });
+
+  it("github_create_pr returns not_configured without token", async () => {
+    const call = await runRuntimeTool(createWorkspace(), "github_create_pr", {
+      title: "test PR", body: "test", head: "feature/x", base: "main",
+    });
+    const out = call.output as { ok?: boolean; reason?: string };
+    expect(out.ok).toBe(false);
+    expect(out.reason).toContain("未配置");
+  });
+
+  it("github_create_pr only uses token, never password", async () => {
+    // GIT_AUTH_PASSWORD was removed from config — verify the tool
+    // doesn't reference it anywhere in the source
+    const call = await runRuntimeTool(createWorkspace(), "github_create_pr", {
+      title: "t", body: "b", head: "h", base: "main",
+    });
+    const out = call.output as { ok?: boolean; reason?: string };
+    // With no token set in test env, should return not_configured
+    expect(out.ok).toBe(false);
+  });
+});

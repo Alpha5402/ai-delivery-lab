@@ -48,11 +48,11 @@ function makeWorkspace(overrides: Partial<WorkspaceContext> = {}): WorkspaceCont
 describe("stepVerifiers", () => {
   describe("verifyClarification", () => {
     it("auto-continues when confidence and answers are sufficient", () => {
-      const output: ClarificationOutput = {
+      const output: ClarificationOutput = { decisions: [], clarificationComplete: false,
         summary: "summary",
         confidence: 0.9,
         questions: [
-          { id: "q1", question: "Q1", answer: "A1", riskIfUnanswered: "low" },
+          { title: "测试标题", id: "q1", question: "Q1", answer: "A1", riskIfUnanswered: "low", status: "open" },
         ],
       };
       const result = verifyClarification(output);
@@ -60,11 +60,11 @@ describe("stepVerifiers", () => {
     });
 
     it("requires repair when confidence is low (allows one follow-up)", () => {
-      const output: ClarificationOutput = {
+      const output: ClarificationOutput = { decisions: [], clarificationComplete: false,
         summary: "summary",
         confidence: 0.4,
         questions: [
-          { id: "q1", question: "Q1", answer: "A1", riskIfUnanswered: "low" },
+          { title: "测试标题", id: "q1", question: "Q1", answer: "A1", riskIfUnanswered: "low", status: "open" },
         ],
       };
       const result = verifyClarification(output);
@@ -72,16 +72,17 @@ describe("stepVerifiers", () => {
       expect(result.checks.some((c) => c.id === "clarification.confidence" && c.status === "failed")).toBe(true);
     });
 
-    it("flags high-risk unanswered questions (repair to allow follow-up)", () => {
-      const output: ClarificationOutput = {
+    it("flags high-risk unanswered questions as need-human", () => {
+      const output: ClarificationOutput = { decisions: [], clarificationComplete: false,
         summary: "summary",
         confidence: 0.95,
         questions: [
-          { id: "q1", question: "Q1", answer: "", riskIfUnanswered: "data loss" },
+          { title: "测试标题", id: "q1", question: "Q1", answer: "", riskIfUnanswered: "data loss", status: "open" },
         ],
       };
       const result = verifyClarification(output);
-      expect(result.qualityGate.decision).toBe("repair");
+      // 高风险未回答 → 直接 need-human，LLM repair 无法替用户回答
+      expect(result.qualityGate.decision).toBe("need-human");
     });
   });
 

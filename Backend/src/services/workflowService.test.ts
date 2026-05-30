@@ -31,7 +31,9 @@ function makeMockTransport(): LlmTransport {
 // 常用的 schema 合规 mock 输出
 const MOCK_CLARIFICATION = JSON.stringify({
   summary: "ok",
+  decisions: [],
   questions: [],
+  clarificationComplete: false,
   confidence: 0.8,
 });
 const MOCK_SOLUTION_DESIGN = JSON.stringify({
@@ -150,7 +152,7 @@ describe("workflowService", () => {
     live.steps[1].status = "waiting-human";
     live.steps[1].output = {
       summary: "需求为前端展示优化",
-      questions: [],
+      questions: [], decisions: [], clarificationComplete: false,
       confidence: 0.8,
     } satisfies ClarificationOutput;
 
@@ -222,7 +224,7 @@ describe("workflowService", () => {
     const live = getWorkflowRun(run.id)!;
     live.steps[1].output = {
       summary: "已澄清",
-      questions: [],
+      questions: [], decisions: [], clarificationComplete: false,
       confidence: 0.9,
     } satisfies ClarificationOutput;
 

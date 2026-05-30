@@ -1,3 +1,4 @@
+import type { RuntimeMemoryContext } from "../services/workflowMemory.js";
 import {
   type ClarificationOutput,
   type RequirementDraft,
@@ -7,23 +8,44 @@ import {
 import { callJsonLlmWithSchema } from "../services/llmClient.js";
 import { recordMetric } from "../services/metricsService.js";
 
+export type PlannerContext = {
+  runtimeMemory?: RuntimeMemoryContext;
+};
+
 export async function runPlannerAgent(
   requirement: RequirementDraft,
   clarification: ClarificationOutput,
+  context?: PlannerContext,
 ): Promise<SolutionDsl> {
+  const systemLines = [
+    "你是 Conduit 全栈方案设计 Agent。",
+    "请根据 PM 需求和澄清结果输出 JSON，字段必须为 requirementId, scope, userStory, acceptanceCriteria, dataContract。",
+    "scope 只能是 frontend, backend, fullstack。",
+    "acceptanceCriteria 使用可验证条目，不要输出 Markdown。",
+  ];
+
+  if (context?.runtimeMemory) {
+    systemLines.push(
+      "你必须优先遵守 runtimeMemory 中用户明确确认/修正的约束。",
+      "如果用户反馈与你原计划冲突，以用户反馈为准。",
+      "澄清阶段用户确认的决策必须写入 acceptanceCriteria。",
+      "不要重新引入已被用户否定的范围或设计。",
+    );
+  }
+
+  const userPayload: Record<string, unknown> = { requirement, clarification };
+  if (context?.runtimeMemory) {
+    userPayload.runtimeMemory = context.runtimeMemory.summary;
+  }
+
   const result = await callJsonLlmWithSchema([
     {
       role: "system",
-      content: [
-        "你是 Conduit 全栈方案设计 Agent。",
-        "请根据 PM 需求和澄清结果输出 JSON，字段必须为 requirementId, scope, userStory, acceptanceCriteria, dataContract。",
-        "scope 只能是 frontend, backend, fullstack。",
-        "acceptanceCriteria 使用可验证条目，不要输出 Markdown。",
-      ].join("\n"),
+      content: systemLines.join("\n"),
     },
     {
       role: "user",
-      content: JSON.stringify({ requirement, clarification }),
+      content: JSON.stringify(userPayload),
     },
   ], solutionDslSchema, { label: "Planner Agent" });
 

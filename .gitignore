@@ -6,3 +6,6 @@ Backend/node_modules
 Backend/dist
 Backend/.env
 workspace/
+*.sqlite
+.DS_Store
+*.tsbuildinfo

@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { generateAgentReadme } from "../agents/repositoryContextAgent.js";
+import { env } from "../config/env.js";
 import type {
   ImportWorkspaceInput,
   QuickProjectInput,
@@ -180,7 +181,18 @@ async function scanRepository(repoUrl: string, repoName: string): Promise<Reposi
   try {
     await mkdir(workspaceRoot, { recursive: true });
     logWorkspaceEvent("clone.start", { repoUrl, clonePath, repoName, timeoutMs: gitCloneTimeoutMs });
-    await execFileAsync("git", ["clone", "--depth", "1", repoUrl, clonePath], { timeout: gitCloneTimeoutMs });
+    // 对 GitHub HTTPS URL 注入认证（和 push 方式一致，使用 http.extraHeader）
+    const cloneEnv: Record<string, string> = {};
+    const cloneToken = env.GITHUB_TOKEN || env.GIT_AUTH_TOKEN ;
+    if (cloneToken && repoUrl.startsWith("https://github.com/")) {
+      cloneEnv.GIT_CONFIG_COUNT = "1";
+      cloneEnv.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
+      cloneEnv.GIT_CONFIG_VALUE_0 = `Authorization: Bearer ${cloneToken}`;
+    }
+    await execFileAsync("git", ["clone", "--depth", "1", repoUrl, clonePath], {
+      timeout: gitCloneTimeoutMs,
+      env: cloneToken ? { ...process.env, ...cloneEnv } : undefined,
+    });
     logWorkspaceEvent("clone.success", { repoUrl, clonePath, repoName });
     return scanLocalRepository(clonePath, repoName, repoUrl, "cloned");
   } catch (error) {

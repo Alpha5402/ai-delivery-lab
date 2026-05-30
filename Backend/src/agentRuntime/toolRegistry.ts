@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { env } from "../config/env.js";
 import type { WorkspaceContext } from "../domain/workspace.js";
 import type { RuntimeToolCall, RuntimeToolName } from "./types.js";
 
@@ -80,6 +81,16 @@ async function executeTool(workspace: WorkspaceContext, tool: RuntimeToolName, i
       return writeWorkspaceFile(workspace, input);
     case "git_checkout_branch":
       return gitCheckoutBranch(workspace, input);
+    case "git_config_identity":
+      return gitConfigIdentity(workspace);
+    case "git_create_branch":
+      return gitCreateBranch(workspace, input);
+    case "git_commit_changes":
+      return gitCommitChanges(workspace, input);
+    case "git_push_branch":
+      return gitPushBranch(workspace, input);
+    case "github_create_pr":
+      return githubCreatePr(workspace, input);
   }
 }
 
@@ -332,6 +343,192 @@ async function gitCheckoutBranch(workspace: WorkspaceContext, input: RuntimeTool
         reason: error instanceof Error ? error.message : "git checkout -b failed",
       };
     }
+  }
+}
+
+// ---- 新增 Git 工具 ----
+
+async function gitConfigIdentity(workspace: WorkspaceContext) {
+  if (!workspace.workspaceDir) {
+    return { ok: false, reason: "workspaceDir is not available" };
+  }
+  if (!env.GIT_USER_NAME || !env.GIT_USER_EMAIL) {
+    return { ok: false, reason: "GIT_USER_NAME 或 GIT_USER_EMAIL 未配置" };
+  }
+  try {
+    await execFileAsync("git", ["config", "user.name", env.GIT_USER_NAME], { cwd: workspace.workspaceDir, timeout: 5_000 });
+    await execFileAsync("git", ["config", "user.email", env.GIT_USER_EMAIL], { cwd: workspace.workspaceDir, timeout: 5_000 });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : "git config failed" };
+  }
+}
+
+async function gitCreateBranch(workspace: WorkspaceContext, input: RuntimeToolInput) {
+  if (!workspace.workspaceDir) {
+    return { ok: false, reason: "workspaceDir is not available" };
+  }
+  const branch = String(input.branch ?? "").replace(/[^A-Za-z0-9._/-]/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 60);
+  if (!branch) {
+    return { ok: false, reason: "invalid branch name" };
+  }
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: workspace.workspaceDir, timeout: 5_000 });
+    if (stdout.trim() === branch) {
+      return { ok: true, branch, reused: true, reason: "already on target branch" };
+    }
+  } catch { /* proceed */ }
+  try {
+    await execFileAsync("git", ["rev-parse", "--verify", branch], { cwd: workspace.workspaceDir, timeout: 5_000 });
+    await execFileAsync("git", ["checkout", branch], { cwd: workspace.workspaceDir, timeout: 10_000 });
+    return { ok: true, branch, reused: true };
+  } catch {
+    try {
+      await execFileAsync("git", ["checkout", "-b", branch], { cwd: workspace.workspaceDir, timeout: 15_000 });
+      return { ok: true, branch, reused: false };
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : "git create branch failed" };
+    }
+  }
+}
+
+async function gitCommitChanges(workspace: WorkspaceContext, input: RuntimeToolInput) {
+  if (!workspace.workspaceDir) {
+    return { ok: false, reason: "workspaceDir is not available" };
+  }
+  const message = String(input.message ?? "workflow auto commit").slice(0, 200).replace(/["`$\\]/g, "");
+  try {
+    // 先用 -z 探测是否有变更（比 --porcelain 更安全，不受文件名空格/引号影响）
+    const { stdout: statusZ } = await execFileAsync("git", ["status", "--porcelain", "-z"], { cwd: workspace.workspaceDir, timeout: 10_000 });
+    if (!statusZ.trim()) {
+      return { ok: true, committed: false, reason: "no changes to commit" };
+    }
+
+    // Stage all changes，then unstage protected files (比逐行解析 porcelain 更健壮)
+    await execFileAsync("git", ["add", "-A"], { cwd: workspace.workspaceDir, timeout: 15_000 });
+
+    // Unstage PROTECTED_FILENAMES and .git/ node_modules/
+    const { stdout: stagedFiles } = await execFileAsync("git", ["diff", "--cached", "--name-only", "-z"], { cwd: workspace.workspaceDir, timeout: 10_000 });
+    const filesToUnstage: string[] = [];
+    for (const file of stagedFiles.split("\0")) {
+      if (!file) continue;
+      const name = file.split("/").pop() ?? "";
+      if (PROTECTED_FILENAMES.has(name) || file.startsWith(".git/") || file.startsWith("node_modules/")) {
+        filesToUnstage.push(file);
+      }
+    }
+    if (filesToUnstage.length > 0) {
+      await execFileAsync("git", ["restore", "--staged", ...filesToUnstage], { cwd: workspace.workspaceDir, timeout: 10_000 });
+    }
+
+    // 检查 unstage 后是否还有可提交的变更
+    const { stdout: remaining } = await execFileAsync("git", ["diff", "--cached", "--name-only", "-z"], { cwd: workspace.workspaceDir, timeout: 10_000 });
+    const remainingFiles = remaining.split("\0").filter(Boolean);
+    if (remainingFiles.length === 0) {
+      return { ok: true, committed: false, reason: "only protected files changed" };
+    }
+
+    await execFileAsync("git", ["commit", "-m", message], { cwd: workspace.workspaceDir, timeout: 15_000 });
+    return { ok: true, committed: true, filesChanged: remainingFiles.length };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : "git commit failed" };
+  }
+}
+
+async function gitPushBranch(workspace: WorkspaceContext, input: RuntimeToolInput) {
+  if (!workspace.workspaceDir) {
+    return { ok: false, reason: "workspaceDir is not available" };
+  }
+  const remote = env.GITHUB_REMOTE;
+  const token = env.GITHUB_TOKEN || env.GIT_AUTH_TOKEN ;
+  const branch = String(input.branch ?? "");
+  if (!branch) {
+    return { ok: false, reason: "branch name required" };
+  }
+  try {
+    // 使用环境变量 GIT_ASKPASS 传递认证，避免 token 出现在进程列表和日志中
+    const extraEnv: Record<string, string> = {};
+    if (token) {
+      // 通过 http.extraHeader 注入 token（仅对 GitHub HTTPS 有效）
+      extraEnv.GIT_CONFIG_COUNT = "1";
+      extraEnv.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
+      extraEnv.GIT_CONFIG_VALUE_0 = `Authorization: Bearer ${token}`;
+    }
+    await execFileAsync("git", ["push", "-u", remote, branch], {
+      cwd: workspace.workspaceDir,
+      timeout: 60_000,
+      env: { ...process.env, ...extraEnv },
+    });
+    return { ok: true, branch, remote };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : "git push failed";
+    // 脱敏：确保 token 不到日志中
+    // extraHeader 方式已避免 token 出现在 argv 里，这里做二次保险
+    return { ok: false, reason: token ? errMsg.replace(token, "***") : errMsg };
+  }
+}
+
+function detectGitRemoteOwnerRepo(remoteUrl: string): { owner: string; repo: string } | null {
+  // https://github.com/owner/repo.git
+  const httpsMatch = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2] };
+  // git@github.com:owner/repo.git
+  const sshMatch = remoteUrl.match(/git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2] };
+  return null;
+}
+
+async function githubCreatePr(workspace: WorkspaceContext, input: RuntimeToolInput) {
+  // GitHub API 需要 token，不支持 password
+  const token = env.GITHUB_TOKEN || env.GIT_AUTH_TOKEN;
+  if (!token) {
+    return { ok: false, reason: "GITHUB_TOKEN 未配置" };
+  }
+  if (!workspace.workspaceDir) {
+    return { ok: false, reason: "workspaceDir is not available" };
+  }
+  const title = String(input.title ?? "").slice(0, 200);
+  const body = String(input.body ?? "").slice(0, 5_000);
+  const headBranch = String(input.head ?? "");
+  const baseBranch = String(input.base ?? env.GITHUB_BASE_BRANCH);
+
+  // 推断 owner/repo
+  let owner = env.GITHUB_OWNER;
+  let repo = env.GITHUB_REPO;
+  if (!owner || !repo) {
+    try {
+      const { stdout } = await execFileAsync("git", ["remote", "get-url", env.GITHUB_REMOTE], { cwd: workspace.workspaceDir, timeout: 5_000 });
+      const info = detectGitRemoteOwnerRepo(stdout.trim());
+      if (info) { owner = info.owner; repo = info.repo; }
+    } catch { /* fall through */ }
+  }
+  if (!owner || !repo) {
+    return { ok: false, reason: "无法推断 GitHub owner/repo，请配置 GITHUB_OWNER/GITHUB_REPO" };
+  }
+
+  try {
+    const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({ title, body, head: headBranch, base: baseBranch }),
+    });
+    const payload = await response.json() as Record<string, unknown>;
+    if (!response.ok) {
+      return { ok: false, reason: `GitHub API 创建 PR 失败: ${response.status} ${JSON.stringify(payload).slice(0, 500)}`.replace(token, "***") };
+    }
+    return {
+      ok: true,
+      url: payload.html_url as string,
+      number: payload.number as number,
+      status: (payload.state as string) === "open" ? "ready" : "draft",
+    };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message.replace(token, "***") : "GitHub API 调用失败" };
   }
 }
 

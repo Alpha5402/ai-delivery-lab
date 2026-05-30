@@ -17,6 +17,7 @@ import {
 } from "../../api/client";
 import { AppBreadcrumb } from "../../components/AppBreadcrumb/AppBreadcrumb";
 import { PageSkeleton } from "../../components/PageSkeleton/PageSkeleton";
+import { SurfaceCard } from "../../components/SurfaceCard/SurfaceCard";
 import { RepositoryChanges } from "../../components/RepositoryChanges/RepositoryChanges";
 import { TestResultPanel } from "../../components/TestResultPanel/TestResultPanel";
 import { summarizeMetrics } from "../../features/observability/metricsSummary";
@@ -55,10 +56,23 @@ function SummaryCard({ title, children }: { title: string; children: ReactNode }
 }
 
 function EmptyStepSummary({ step }: { step: StepRun }) {
+  const statusMessage = (() => {
+    switch (step.status) {
+      case "running":
+        return `${step.agent} 正在生成结构化结果，请稍候。`;
+      case "failed":
+        return `${step.label} 执行失败，查看日志后可从时间轴重试。`;
+      case "waiting-human":
+        return `${step.label} 正在等待审核，请审阅 Agent 输出。`;
+      default:
+        return `${step.label} 还没有产出结构化结果。确认并继续后，后端会运行对应智能体并把结构化结果传递给下游步骤。`;
+    }
+  })();
+
   return (
     <div className="step-summary step-summary--empty">
-      <SummaryCard title="等待执行">
-        <p>{step.label} 还没有产出结构化结果。点击“确认并继续”后，后端会运行对应智能体并把结构化结果传递给下游步骤。</p>
+      <SummaryCard title={step.status === "running" ? "生成中" : step.status === "failed" ? "执行失败" : "等待执行"}>
+        <p>{statusMessage}</p>
       </SummaryCard>
       <SummaryCard title="当前状态">
         <div className="workbench__meta">
@@ -106,11 +120,28 @@ function renderStepSummary(step: StepRun) {
       if (!clarification.summary || !Array.isArray(clarification.questions)) {
         return <EmptyStepSummary step={step} />;
       }
+      const openQs = (clarification as { questions?: Array<{ status?: string }> }).questions?.filter(
+        (q) => q.status !== "resolved",
+      ) ?? [];
+      const decisions = (clarification as { decisions?: Array<{ id: string; title: string; finalAnswer: string }> }).decisions;
       return (
         <div className="step-summary">
           <SummaryCard title="澄清摘要">
             <p>{clarification.summary}</p>
           </SummaryCard>
+          {decisions && decisions.length > 0 && (
+            <SummaryCard title="已确认决策">
+              <ul className="step-summary__list">
+                {decisions.map((d) => (
+                  <li key={d.id}>
+                    <strong>{d.title}</strong>
+                    <small>{d.finalAnswer}</small>
+                  </li>
+                ))}
+              </ul>
+            </SummaryCard>
+          )}
+          {openQs.length > 0 && (
           <SummaryCard title="关键问题">
             <ul className="step-summary__list">
               {clarification.questions.map((item) => (
@@ -122,6 +153,7 @@ function renderStepSummary(step: StepRun) {
               ))}
             </ul>
           </SummaryCard>
+          )}
         </div>
       );
     }
@@ -279,7 +311,7 @@ function mapRuntimeStatus(step: StepRun): RuntimeStatus {
 const runtimeStatusLabels: Record<RuntimeStatus, string> = {
   waiting: "等待执行",
   running: "正在执行",
-  blocked: "等待用户",
+  blocked: "待审核",
   success: "已完成",
   failed: "执行失败",
   paused: "已暂停",
@@ -308,9 +340,9 @@ const runtimeStateCopy: Record<RuntimeStatus, { eyebrow: string; title: string; 
     cta: "正在运行",
   },
   blocked: {
-    eyebrow: "需要人工介入",
-    title: "智能体正在等待你的修正",
-    description: "请补充当前步骤的约束或纠正智能体理解，这段介入会成为运行记忆。",
+    eyebrow: "待审核",
+    title: "当前步骤需要审核",
+    description: "请审阅智能体输出并补充修正意见，反馈将作为运行记忆影响后续生成。",
     cta: "发送补充并重新生成",
   },
   success: {
@@ -342,7 +374,7 @@ function formatRuntimeStatusValue(value?: string) {
     ready: "就绪",
     success: "成功",
     running: "运行中",
-    "waiting-human": "等待人工介入",
+    "waiting-human": "待审核",
     idle: "等待执行",
   };
   return statusMap[value] ?? value;
@@ -367,8 +399,8 @@ function formatRuntimeEventTitle(title: string) {
     "User intervention submitted": "用户已提交介入",
     "Regenerating current step": "正在重新生成当前步骤",
     "Structured output updated": "结构化输出已更新",
-    "Waiting for user confirmation": "等待用户确认",
-    "Waiting for intervention": "等待人工介入",
+    "Waiting for user confirmation": "待审核",
+    "Waiting for intervention": "待审核",
     "Runtime auto-continue enabled": "运行时已启用自动继续",
     "User confirmed; Runtime auto-continue resumed": "用户已确认，运行时继续执行",
   };
@@ -388,7 +420,7 @@ function formatRuntimeEventTitle(title: string) {
   }).reduce((nextTitle, [source, target]) => nextTitle.replaceAll(source, target), title)
     .replace(/ started$/, " 开始执行")
     .replace(/ finished$/, " 执行完成")
-    .replace(/ waiting for user$/i, " 等待用户")
+    .replace(/ waiting for user$/i, " 待审核")
     .replace(/ running$/i, " 正在执行");
 }
 
@@ -405,12 +437,21 @@ function formatChangeType(value: string) {
 }
 
 function getQuestionTopic(question: ClarificationOutput["questions"][number], index: number) {
-  const text = `${question.question} ${question.answer} ${question.riskIfUnanswered}`;
-  if (/Markdown|标签|字数|统计|字符|单词|空格/.test(text)) return "字数统计规则";
-  if (/UI|展示|位置|标题|按钮|页面|样式|布局/.test(text)) return "UI 展示规则";
-  if (/空|异常|边界|未登录|错误|特殊/.test(text)) return "特殊场景处理";
-  if (/接口|后端|API|幂等|数据/.test(text)) return "接口与数据规则";
-  return question.question.replace(/[？?。]/g, "").slice(0, 16) || `待确认项 ${index + 1}`;
+  const raw = question.question?.trim();
+  if (!raw) return `待确认项 ${index + 1}`;
+
+  // 去掉空泛开头和标点，提取关键词汇
+  const cleaned = raw
+    .replace(/^[是否请问如何能否可以需要]*[？?？，,。.\s]*/g, "")
+    .replace(/[？?？。.]/g, "");
+
+  // 优先取 clean 后文本的前 8-16 个中文字符作为短标题
+  const short = cleaned.slice(0, 16).trim();
+  if (short.length >= 4) return short;
+
+  // 太短时回退到原文本截断
+  const fallback = raw.replace(/[？?？。.]/g, "").slice(0, 16).trim();
+  return fallback || `待确认项 ${index + 1}`;
 }
 
 function extractRuntimeMemory(messages: InterventionMessage[]) {
@@ -460,7 +501,7 @@ function buildExecutionEvents(steps: StepRun[], activeStep: StepRun | null, acti
   }).concat(activeStep && ["running", "blocked"].includes(activeStatus) ? [{
     id: `${activeStep.id}-live-${activeStatus}`,
     time: new Date().toISOString(),
-    title: activeStatus === "blocked" ? "等待人工介入" : `${activeStep.agent} ${runtimeStatusLabels[activeStatus]}`,
+    title: activeStatus === "blocked" ? "待审核" : `${activeStep.agent} ${runtimeStatusLabels[activeStatus]}`,
     detail: activeStep.label,
     live: true,
   }] : []).slice(-16);
@@ -571,11 +612,11 @@ function StepChatThread({
           <span>人工介入</span>
           <h3>当前步骤运行记忆</h3>
         </div>
-        {waitingForUser ? <Tag color="warning" variant="outlined">智能体正在等待你的修正</Tag> : <Tag variant="outlined">介入历史</Tag>}
+        {waitingForUser ? <Tag color="warning" variant="outlined">待审核</Tag> : <Tag variant="outlined">介入历史</Tag>}
       </header>
       {waitingForUser ? (
         <div className="runtime-chat__waiting">
-          <strong>等待人工介入</strong>
+          <strong>待审核</strong>
           <span>当前步骤已暂停。你可以纠正智能体对当前步骤的理解，然后重新生成结构化输出。</span>
         </div>
       ) : null}
@@ -622,6 +663,8 @@ function StepInterventionWorkspace({
 }) {
   const [questionFeedback, setQuestionFeedback] = useState<Record<string, string>>({});
   const [generalFeedback, setGeneralFeedback] = useState("");
+  const [expandedSupplement, setExpandedSupplement] = useState<Record<string, boolean>>({});
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, string[]>>({});
   const visibleMessages = messages.filter((message) => message.stepId === step.id && message.role !== "agent");
   const value = step.output ?? step.input;
   const clarification = step.id === "clarification" && isRecord(value) ? value as ClarificationOutput : null;
@@ -630,18 +673,62 @@ function StepInterventionWorkspace({
   useEffect(() => {
     setQuestionFeedback({});
     setGeneralFeedback("");
+    setExpandedSupplement({});
+    setSelectedOptions({});
   }, [step.id]);
+
+  /** 判断 Agent 当前理解是否有有效内容 */
+  function isAnswerValid(answer: string | undefined): boolean {
+    if (!answer || !answer.trim()) return false;
+    const placeholderPatterns = [
+      "当前还没有明确理解",
+      "暂无",
+      "待确认",
+      "需要你补充",
+      "需要补充",
+    ];
+    const cleaned = answer.trim();
+    if (cleaned.length < 2) return false;
+    for (const p of placeholderPatterns) {
+      if (cleaned.includes(p) && cleaned.length < 20) return false;
+    }
+    return true;
+  }
+
+  function toggleSupplement(questionId: string) {
+    setExpandedSupplement((prev) => ({ ...prev, [questionId]: !prev[questionId] }));
+  }
+
+  function handleSupplementBlur(questionId: string) {
+    setExpandedSupplement((prev) => ({ ...prev, [questionId]: false }));
+  }
 
   function submitFeedback() {
     const questionReplies = questions
       .map((question, index) => {
-        const feedback = questionFeedback[question.id]?.trim();
-        if (!feedback) return null;
-        return [
-          `问题 ${index + 1}：${question.question}`,
-          question.answer ? `当前理解：${question.answer}` : null,
-          `我的反馈：${feedback}`,
-        ].filter(Boolean).join("\n");
+        const selected = selectedOptions[question.id];
+        const custom = questionFeedback[question.id]?.trim();
+        if ((!selected || selected.length === 0) && !custom) return null;
+
+        const parts: string[] = [];
+        parts.push(`问题：${question.question}`);
+
+        if (selected && selected.length > 0 && question.responseControl) {
+          const labels = question.responseControl.options
+            .filter((opt) => selected.includes(opt.id))
+            .map((opt) => {
+              let line = `选择：${opt.label}`;
+              if (opt.description) line += `\n说明：${opt.description}`;
+              return line;
+            });
+          parts.push(...labels);
+        }
+
+        if (custom) {
+          parts.push(`其他，请告诉 Agent 你的预期 ${custom}`);
+        }
+
+        return parts.join("\n");
       })
       .filter(Boolean);
     const general = generalFeedback.trim();
@@ -654,6 +741,7 @@ function StepInterventionWorkspace({
     onSubmitMessage(messageParts.join("\n\n"));
     setQuestionFeedback({});
     setGeneralFeedback("");
+    setSelectedOptions({});
   }
 
   return (
@@ -664,56 +752,197 @@ function StepInterventionWorkspace({
           <h3>确认结构化澄清</h3>
           <p>逐条展开需要确认的问题，补充你的修正意见；这些反馈会作为当前步骤的运行记忆一起发送。</p>
         </div>
-        <Tag color="warning" variant="outlined">等待你的确认</Tag>
+        <Tag color="warning" variant="outlined">待审核</Tag>
       </header>
 
-      {clarification ? (
+      {clarification ? (() => {
+        // 只显示仍需用户处理的问题（兼容旧数据无 status 时按 open 处理）
+        const openQuestions = questions.filter(
+          (q) => (q as { status?: string }).status !== "resolved",
+        );
+        const hasDecisions = (clarification as { decisions?: unknown[] }).decisions?.length > 0;
+        const isComplete =
+          (clarification as { clarificationComplete?: boolean }).clarificationComplete === true ||
+          (openQuestions.length === 0 && questions.length > 0 && hasDecisions);
+
+        // 澄清已完成：显示 decisions，不显示问题列表
+        if (isComplete || (openQuestions.length === 0 && questionFeedback && Object.keys(questionFeedback).length === 0 && Object.keys(selectedOptions).length === 0)) {
+          return (
+            <section className="clarification-review">
+              <SurfaceCard title="智能体理解" tone="muted">
+                {clarification.summary}
+              </SurfaceCard>
+              <SurfaceCard title="澄清已完成" tone="success">
+                {isComplete
+                  ? "所有问题已解决。已确认的决策将传递给方案设计阶段。"
+                  : "当前没有待审核的开放问题。"}
+              </SurfaceCard>
+              {(clarification as { decisions?: Array<{ id: string; title: string; finalAnswer: string; source: string }> }).decisions?.map((d) => (
+                <SurfaceCard key={d.id} title={d.title} tone="muted">
+                  <div style={{ color: "#667085", fontSize: 12 }}>{d.finalAnswer}</div>
+                </SurfaceCard>
+              ))}
+            </section>
+          );
+        }
+
+        return (
         <section className="clarification-review">
-          <div className="clarification-review__summary">
-            <span>智能体理解</span>
-            <p>{clarification.summary}</p>
-          </div>
+          <SurfaceCard title="智能体理解" tone="muted">
+            {clarification.summary}
+          </SurfaceCard>
           <Collapse
             className="clarification-question-list"
             defaultActiveKey={questions[0]?.id ? [questions[0].id] : []}
-            items={questions.map((question, index) => ({
+            items={openQuestions.map((question, index) => ({
               key: question.id,
               label: (
                 <span className="clarification-question-list__label">
-                  <b>问题 {index + 1}</b>
-                  <Typography.Text ellipsis>{getQuestionTopic(question, index)}</Typography.Text>
+                  <b>{question.title ?? getQuestionTopic(question, index)}</b>
                 </span>
               ),
               children: (
                 <div className="clarification-question">
-                  <section>
-                    <h4>待确认项</h4>
-                    <p>{question.question}</p>
-                  </section>
-                  <section>
-                    <h4>Agent 当前理解</h4>
-                    <p>{question.answer || "当前还没有明确理解，需要你补充决策信息。"}</p>
-                  </section>
-                  <section>
-                    <h4>存在风险</h4>
-                    <p>{question.riskIfUnanswered}</p>
-                  </section>
-                  <section>
-                    <h4>用户补充</h4>
-                    <Input.TextArea
-                      autoSize={{ minRows: 2, maxRows: 5 }}
-                      disabled={running}
-                      onChange={(event) => setQuestionFeedback((current) => ({ ...current, [question.id]: event.target.value }))}
-                      placeholder="补充额外约束，例如：不统计 Markdown 标签，仅统计纯文本内容。"
-                      value={questionFeedback[question.id] ?? ""}
-                    />
-                  </section>
+                  <SurfaceCard title="待确认项">
+                    {question.question}
+                  </SurfaceCard>
+                  {isAnswerValid(question.answer) ? (
+                    <SurfaceCard title="Agent 当前理解" tone="muted">
+                      {question.answer!.trim()}
+                    </SurfaceCard>
+                  ) : null}
+                  <SurfaceCard title="存在风险" tone="warning">
+                    {question.riskIfUnanswered}
+                  </SurfaceCard>
+
+                  {/* responseControl: Agent 输出的选择题 */}
+                  {question.responseControl ? (() => {
+                    const rc = question.responseControl;
+                    const selected = selectedOptions[question.id] ?? [];
+                    const isSingle = rc.type === "single";
+                    const letters = "ABCDEFGH";
+
+                    function toggleOption(optionId: string) {
+                      setSelectedOptions((prev) => {
+                        const current = prev[question.id] ?? [];
+                        if (isSingle) {
+                          return { ...prev, [question.id]: current.includes(optionId) ? [] : [optionId] };
+                        }
+                        return {
+                          ...prev,
+                          [question.id]: current.includes(optionId)
+                            ? current.filter((id) => id !== optionId)
+                            : [...current, optionId],
+                        };
+                      });
+                    }
+
+                    const customId = `__custom__${question.id}`;
+                    const customText = questionFeedback[question.id]?.trim();
+                    const customPrefix = letters[rc.options.length] ?? "?";
+
+                    function toggleCustom() {
+                      toggleSupplement(question.id);
+                      // 点击自定义即标记为「已选择」（有文本内容时选中态随之生效）
+                      if (!customText) {
+                        setSelectedOptions((prev) => {
+                          const current = prev[question.id] ?? [];
+                          if (isSingle) return { ...prev, [question.id]: [] };
+                          return { ...prev, [question.id]: current };
+                        });
+                      }
+                    }
+
+                    return (
+                      <SurfaceCard title={isSingle ? "请选择（单选）" : "请选择（多选）"} tone="accent">
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                          {/* Agent 给出的选项 */}
+                          {rc.options.map((opt, i) => {
+                            const isSelected = selected.includes(opt.id);
+                            return (
+                              <SurfaceCard
+                                key={opt.id}
+                                tone={isSelected ? "success" : "default"}
+                                interactive
+                                selected={isSelected}
+                                onClick={() => toggleOption(opt.id)}
+                              >
+                                <span style={{ fontWeight: 700 }}>{letters[i]}.</span> {opt.label}
+                                {opt.description && (
+                                  <div style={{ color: "#667085", fontSize: 12, marginTop: 4 }}>{opt.description}</div>
+                                )}
+                              </SurfaceCard>
+                            );
+                          })}
+
+                          {/* 自定义补充：作为最后一个选项，可选中 */}
+                          {expandedSupplement[question.id] ? (
+                            <SurfaceCard
+                              tone={customText ? "success" : "accent"}
+                              selected={!!customText}
+                            >
+                              <span style={{ fontWeight: 700 }}>{customPrefix}.</span> 其他，请告诉 Agent 你的预期
+                              <Input.TextArea
+                                autoFocus
+                                autoSize={{ minRows: 2, maxRows: 4 }}
+                                disabled={running}
+                                onBlur={() => handleSupplementBlur(question.id)}
+                                onChange={(event) => setQuestionFeedback((current) => ({ ...current, [question.id]: event.target.value }))}
+                                placeholder="请在此输入你的预期"
+                                value={questionFeedback[question.id] ?? ""}
+                                style={{ marginTop: 8 }}
+                              />
+                            </SurfaceCard>
+                          ) : (
+                            <SurfaceCard
+                              tone={customText ? "success" : "muted"}
+                              interactive
+                              selected={!!customText}
+                              onClick={toggleCustom}
+                            >
+                              <span style={{ fontWeight: 700 }}>{customPrefix}.</span> 其他，请告诉 Agent 你的预期
+                              {customText && (
+                                <Typography.Text ellipsis style={{ color: "#344054", display: "block", marginTop: 4 }}>
+                                  {customText}
+                                </Typography.Text>
+                              )}
+                            </SurfaceCard>
+                          )}
+                        </div>
+                      </SurfaceCard>
+                    );
+                  })() : (
+                    /* 无 responseControl 的降级：纯文本补充 */
+                    expandedSupplement[question.id] ? (
+                      <SurfaceCard title="用户补充" tone="accent">
+                        <Input.TextArea
+                          autoFocus
+                          autoSize={{ minRows: 2, maxRows: 5 }}
+                          disabled={running}
+                          onBlur={() => handleSupplementBlur(question.id)}
+                          onChange={(event) => setQuestionFeedback((current) => ({ ...current, [question.id]: event.target.value }))}
+                          placeholder="补充额外约束，例如：不统计 Markdown 标签，仅统计纯文本内容。"
+                          value={questionFeedback[question.id] ?? ""}
+                        />
+                      </SurfaceCard>
+                    ) : (
+                      <SurfaceCard
+                        title="用户补充"
+                        tone="accent"
+                        interactive
+                        onClick={() => toggleSupplement(question.id)}
+                      >
+                        {questionFeedback[question.id]?.trim() || null}
+                      </SurfaceCard>
+                    )
+                  )}
                 </div>
               ),
             }))}
           />
         </section>
-      ) : (
+      );
+    })() : (
         <section className="clarification-review">
           {renderStepSummary(step)}
         </section>
@@ -1688,7 +1917,7 @@ export function WorkbenchPage() {
       const nextRun = await createStepIntervention(run.id, activeStep.id, nextMessage);
       setRun(nextRun);
       setAgentMetrics(await getAgentMetrics());
-      appendRuntimeEvents(activeStep, ["结构化输出已更新", "等待用户确认"]);
+      appendRuntimeEvents(activeStep, ["结构化输出已更新", "待审核"]);
     } catch (error) {
       // 回滚 optimistic update
       setRun(previousRun);
