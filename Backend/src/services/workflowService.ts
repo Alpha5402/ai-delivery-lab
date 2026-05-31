@@ -21,6 +21,9 @@ import { workflowEventBus } from "./workflowEvents.js";
 import { getStepExecutionMode } from "./workflowSettingsService.js";
 import { buildRuntimeMemoryContext } from "./workflowMemory.js";
 import { runStepVerifier, type VerifierResult } from "./stepVerifiers.js";
+import { resolveConfirmationDecision } from "../workflowExecution/confirmationPolicy.js";
+import { resolveRegisteredStepOutput } from "../workflowExecution/stepResolverRegistry.js";
+import { getSkillStepSpec } from "../skills/skillRegistry.js";
 
 const runs = new Map<string, WorkflowRun>();
 
@@ -386,29 +389,24 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
     const mode = getStepExecutionMode(stepId);
     const gateDecision = verifier.qualityGate.decision;
 
-    // 真正决定是否自动续跑的复合条件:
-    //  - 配置允许 automatic
-    //  - 且 quality gate 判定 auto-continue
-    //  - 特殊规则: clarification 产出 clarificationComplete=true 时，即使配置 manual 也自动推进
-    const isClarificationComplete =
-      stepId === "clarification" &&
-      (output as ClarificationOutput).clarificationComplete === true &&
-      gateDecision === "auto-continue";
-    const shouldAutoContinue =
-      (mode === "automatic" && gateDecision === "auto-continue") || isClarificationComplete;
+    // PR3: 通过 confirmation policy 统一计算是否自动推进
+    const skillSpec = getSkillStepSpec(latest, stepId);
+    const confirmation = resolveConfirmationDecision({
+      run: latest,
+      stepId,
+      output,
+      qualityGate: verifier.qualityGate,
+      executionMode: mode,
+      skillConfirmationPolicyAddon: skillSpec.confirmationPolicyAddon,
+    });
 
-    // gate 即使配置 automatic,只要不是 auto-continue 就要落到对应中间态:
-    //  - need-human / repair / block → waiting-human(repair 由专门循环处理,见 P1.4)
-    const nextStatus: StepRun["status"] = shouldAutoContinue
-      ? "success"
-      : gateDecision === "block"
-        ? "failed"
-        : "waiting-human";
+    const shouldAutoContinue = confirmation.shouldAutoContinue;
+    const nextStatus = confirmation.nextStatus;
 
     const nextStepId = stepOrder[stepIndex + 1] ?? stepId;
     latest.activeStepId = shouldAutoContinue ? nextStepId : stepId;
 
-    const gateLogs = buildGateLogs(verifier.qualityGate, mode);
+    const gateLogs = buildGateLogs(verifier.qualityGate, mode, confirmation);
 
     latest.steps = latest.steps.map((current, index) => {
       if (current.id === stepId) {
@@ -512,7 +510,11 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
   }
 }
 
-function buildGateLogs(gate: QualityGateResult, mode: "automatic" | "manual-confirmation"): string[] {
+function buildGateLogs(
+  gate: QualityGateResult,
+  mode: "automatic" | "manual-confirmation",
+  confirmation?: { reasons: string[]; appliedPolicy?: { source: string; mode?: string } },
+): string[] {
   const decisionLabel: Record<QualityGateResult["decision"], string> = {
     "auto-continue": "Quality Gate: auto-continue ✓",
     "need-human": "Quality Gate: 需要人工确认 ⚠",
@@ -522,6 +524,15 @@ function buildGateLogs(gate: QualityGateResult, mode: "automatic" | "manual-conf
   const out = [decisionLabel[gate.decision]];
   for (const reason of gate.reasons) {
     out.push(`  · ${reason}`);
+  }
+  // PR3: 记录 confirmation policy 决策原因
+  if (confirmation) {
+    for (const reason of confirmation.reasons) {
+      out.push(`  · [policy] ${reason}`);
+    }
+    if (confirmation.appliedPolicy) {
+      out.push(`  · [policy source] ${confirmation.appliedPolicy.source}${confirmation.appliedPolicy.mode ? ` (${confirmation.appliedPolicy.mode})` : ""}`);
+    }
   }
   if (mode === "automatic" && gate.decision !== "auto-continue") {
     out.push("配置为 automatic,但 Quality Gate 未通过,改为等待人工确认");
@@ -704,6 +715,11 @@ async function resolveStepOutput(
   stepId: WorkflowStepId,
   options?: { followUp?: { previousOutput: unknown; reasons: string[] } },
 ) {
+  // PR3: 优先走注册表，未注册时 fallback 到旧硬编码
+  const registryOutput = await resolveRegisteredStepOutput({ run, stepId, followUp: options?.followUp });
+  if (registryOutput !== null) return registryOutput;
+
+  // ---- 旧路径 (fallback，保留至所有测试/环境迁移完成) ----
   if (stepId === "requirement_intake") {
     return getStepOutput<RequirementDraft>(run, "requirement_intake");
   }
@@ -713,17 +729,14 @@ async function resolveStepOutput(
     const clarificationStep = run.steps.find((s) => s.id === "clarification");
     const runtimeMemory = buildRuntimeMemoryContext(run, "clarification");
 
-    // 收集该 step 上的用户介入记录
     const userInterventions = (clarificationStep?.interventions ?? [])
       .filter((m) => m.role === "user")
       .map((m) => m.content);
 
-    // 上一轮的产出（如果有）
     const previousOutput = (clarificationStep?.output ?? options?.followUp?.previousOutput) as
       | ClarificationOutput
       | undefined;
 
-    // 只要有用户记录或上一轮产出就走进 followUp 分支
     if (options?.followUp || userInterventions.length > 0 || previousOutput) {
       return runClarifierAgent(requirement, {
         previousOutput: (options?.followUp?.previousOutput as ClarificationOutput) ?? previousOutput,
