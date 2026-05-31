@@ -7,29 +7,47 @@ import {
   type WorkflowStepId,
   workflowStepIds,
 } from "../domain/workflow.js";
+import { getDefaultWorkflowTemplate } from "../workflowTemplates/templateRegistry.js";
 import { workflowEventBus } from "./workflowEvents.js";
 
 /**
- * 默认执行模式（产品语义）：
+ * 默认执行模式（产品语义）。
+ * 从 default WorkflowTemplate 的 step.defaultExecutionMode 派生，
+ * 避免与模板定义双写。
+ *
+ * 当前语义：
  *  - 高风险/语义决策步骤(clarification、solution_design、code_generation、pull_request)
  *    默认需要人工确认;
  *  - 低风险/事实采集步骤(requirement_intake、module_mapping、repo_write、verification)
- *    默认自动续跑,但都被 Quality Gate 二次约束:
- *    · module_mapping: 文件不存在 → need-human;
- *    · repo_write: planned 模式 → need-human, applied 才放行;
- *    · verification: 任何命令 failed → repair / need-human。
+ *    默认自动续跑,但都被 Quality Gate 二次约束。
  *  用户可在 Settings 页覆盖。
  */
-export const defaultStepExecutionModes: Record<WorkflowStepId, StepExecutionMode> = {
-  requirement_intake: "automatic",
-  clarification: "manual-confirmation",
-  solution_design: "manual-confirmation",
-  module_mapping: "automatic",
-  code_generation: "manual-confirmation",
-  repo_write: "automatic",
-  verification: "automatic",
-  pull_request: "manual-confirmation",
-};
+function deriveDefaultModes(): Record<WorkflowStepId, StepExecutionMode> {
+  const template = getDefaultWorkflowTemplate();
+  const modes = {} as Record<WorkflowStepId, StepExecutionMode>;
+  for (const step of template.steps) {
+    if (workflowStepIds.includes(step.id as WorkflowStepId)) {
+      modes[step.id as WorkflowStepId] = step.defaultExecutionMode;
+    }
+  }
+  // 兜底：如果 template 缺失某些 step，用硬编码补偿
+  const fallback: Record<string, StepExecutionMode> = {
+    requirement_intake: "automatic",
+    clarification: "manual-confirmation",
+    solution_design: "manual-confirmation",
+    module_mapping: "automatic",
+    code_generation: "manual-confirmation",
+    repo_write: "automatic",
+    verification: "automatic",
+    pull_request: "manual-confirmation",
+  };
+  for (const [key, val] of Object.entries(fallback)) {
+    if (!(key in modes)) modes[key as WorkflowStepId] = val;
+  }
+  return modes;
+}
+
+export const defaultStepExecutionModes: Record<WorkflowStepId, StepExecutionMode> = deriveDefaultModes();
 
 export const stepExecutionModeSchema = z.enum(["automatic", "manual-confirmation"]);
 

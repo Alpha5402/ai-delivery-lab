@@ -60,6 +60,8 @@ export const verificationStatuses = [
   "not_executed",
 ] as const;
 
+// TODO(PR3): stepOrder / stepLabels / stepAgents 应从 defaultWorkflowTemplate 派生，
+// 消除双写。当前保留硬编码以保证向后兼容，新增模板注册后由测试校验一致性。
 export const stepOrder = [...workflowStepIds];
 
 export const stepLabels: Record<WorkflowStepId, string> = {
