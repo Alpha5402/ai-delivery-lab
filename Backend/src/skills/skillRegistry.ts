@@ -1,11 +1,20 @@
 import type { RequirementDraft, SolutionDsl, WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
-import type { SkillManifest, SkillMatchReason, SkillStepSpec } from "./skillTypes.js";
+import type { ConfirmationPolicyAddon, SkillManifest, SkillMatchReason, SkillStepSpec } from "./skillTypes.js";
+import { skillManifestSchema } from "./skillTypes.js";
 
 const skills = new Map<string, SkillManifest>();
 
-/** 注册一个 Skill。重复 id 会覆盖（最后注册者胜出）。 */
+/** 注册一个 TypeScript builtin Skill。重复 id 会覆盖。 */
 export function registerSkill(skill: SkillManifest): void {
+  skills.set(skill.id, { ...skill, source: "builtin" });
+}
+
+/** 注册一个 JSON Skill（声明式，Zod 校验）。 */
+export function registerJsonSkill(raw: unknown): SkillManifest {
+  const parsed = skillManifestSchema.parse(raw);
+  const skill: SkillManifest = { ...parsed, source: "json" };
   skills.set(skill.id, skill);
+  return skill;
 }
 
 /** 列出所有已注册 Skill 的元信息（供 API / 调试页使用）。 */
@@ -108,6 +117,8 @@ export type SkillStepSpecResult = {
   outputContractAddon?: string;
   contextHints?: string[];
   verificationPolicyAddon?: { required?: string[]; optional?: string[] };
+  /** 确认策略增强（PR2 只透传，PR3 执行） */
+  confirmationPolicyAddon?: ConfirmationPolicyAddon;
   /** 命中原因，前端 SkillBadge tooltip 展示 */
   skillMatchReason?: SkillMatchReason;
 };
@@ -123,7 +134,7 @@ export function getSkillStepSpec(
   const sel = selectWithReason(run);
   if (!sel) return {};
 
-  const stepSpec: SkillStepSpec | undefined = sel.skill.steps[stepId];
+  const stepSpec: SkillStepSpec | undefined = sel.skill.steps?.[stepId];
 
   return {
     skillId: sel.skill.id,
@@ -131,6 +142,7 @@ export function getSkillStepSpec(
     outputContractAddon: stepSpec?.outputContractAddon,
     contextHints: stepSpec?.contextHints,
     verificationPolicyAddon: stepSpec?.verificationPolicyAddon,
+    confirmationPolicyAddon: stepSpec?.confirmationPolicyAddon,
     skillMatchReason: buildMatchReason(run),
   };
 }

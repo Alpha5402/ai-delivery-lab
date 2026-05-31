@@ -1,0 +1,33 @@
+{
+  "id": "frontend-reading-stats",
+  "name": "前端阅读统计组件",
+  "description": "为前端阅读量/阅读时长/字数统计等计算指标展示需求提供增强 prompt",
+  "version": "1.0.0",
+  "requirementPatterns": ["frontend-only"],
+  "scopes": ["frontend"],
+  "match": {
+    "keywords": ["字数统计", "阅读时长", "阅读量", "统计", "计数", "展示", "指标"]
+  },
+  "steps": {
+    "module_mapping": {
+      "instructionAddon": "优先定位展示组件、计算 hook/util、数据获取层。确认计算逻辑与展示逻辑已分离。",
+      "contextHints": ["src/components/", "src/hooks/", "src/utils/"]
+    },
+    "code_generation": {
+      "instructionAddon": "区分 UI 渲染任务、纯计算任务、边界测试。纯计算函数必须 testRequired=true。",
+      "verificationPolicyAddon": {
+        "required": ["npm:typecheck", "npm:lint", "npm:test"],
+        "optional": ["npm:build"]
+      }
+    },
+    "verification": {
+      "instructionAddon": "重点验证计算逻辑边界：空字符串、超长文本、特殊字符处理。",
+      "confirmationPolicyAddon": {
+        "mode": "force-manual",
+        "reason": "计算指标直接影响用户可见数据，建议人工审核",
+        "requireHumanWhen": ["writes-files", "touches-data-model"],
+        "confidenceFloor": 0.7
+      }
+    }
+  }
+}

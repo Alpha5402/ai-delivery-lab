@@ -7,11 +7,13 @@ import { skillRoutes } from "./routes/skillRoutes.js";
 import { workflowRoutes } from "./routes/workflowRoutes.js";
 import { workspaceRoutes } from "./routes/workspaceRoutes.js";
 import { registerBuiltinSkills } from "./skills/builtin/index.js";
+import { loadAndRegisterJsonSkills } from "./skills/jsonSkillLoader.js";
 import { registerBuiltinTemplates } from "./workflowTemplates/templateRegistry.js";
 
 export function createApp() {
-  // 启动时注册内置 Skill 和 WorkflowTemplate
+  // 启动时注册：1. 内置 TS Skill → 2. JSON Skill → 3. WorkflowTemplate
   registerBuiltinSkills();
+  loadAndRegisterJsonSkills();
   registerBuiltinTemplates();
 
   const app = express();

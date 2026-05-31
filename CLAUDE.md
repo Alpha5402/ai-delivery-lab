@@ -205,18 +205,26 @@ Token 获取: GitHub Settings → Developer settings → Fine-grained tokens →
 
 ### 概述
 
-Skill 是"新增需求模式不改主干"的核心抽象。每个 Skill 是一个 TypeScript 文件，声明匹配规则和按 step 拆分的 prompt 注入规格。主干 workflow 保持 8 步不变，不引入跳步。
+Skill 是"新增需求模式不改主干"的核心抽象。支持两种注册方式：
+- **TypeScript builtin Skill**（开发者，`builtin/*.skill.ts`）
+- **JSON 声明式 Skill**（用户，`SKILL_CONFIG_DIR/*.json`，Zod 校验）
+
+主干 workflow 保持 8 步不变，不引入跳步。JSON Skill 不允许任意代码，只允许声明式字段。
 
 ### 目录结构
 
 ```
 Backend/src/skills/
-  skillTypes.ts       # SkillManifest, SkillStepSpec 类型定义
-  skillRegistry.ts    # registerSkill / listSkills / selectSkill / getSkillStepSpec
+  skillTypes.ts          # SkillManifest, SkillStepSpec 类型 + Zod schema
+  skillRegistry.ts       # registerSkill / registerJsonSkill / listSkills / selectSkill / getSkillStepSpec
+  jsonSkillLoader.ts     # loadAndRegisterJsonSkills(dir?) — 从目录加载 JSON Skill
   builtin/
-    index.ts          # registerBuiltinSkills() — 启动时注册所有内置 Skill
-    frontendDisplayComputedMetric.skill.ts  # 前端计算指标展示
-    crossStackAddField.skill.ts             # 跨栈新增字段
+    index.ts             # registerBuiltinSkills()
+    frontendDisplayComputedMetric.skill.ts
+    crossStackAddField.skill.ts
+    backendAddPagination.skill.ts
+Backend/skills.example/
+  frontend-reading-stats.skill.json  # JSON Skill 示例
 ```
 
 ### 核心抽象
@@ -267,9 +275,35 @@ base agentSpec (workflowStepAgent.ts agentSpecs)
 - `GET /api/skills` 列出所有已注册 Skill 摘要
 - `GET /api/skills/:id` 查看完整 manifest
 
+### JSON Skill 注册
+
+- 支持从 `SKILL_CONFIG_DIR`（默认 `./skills`）加载 `.json` Skill 文件
+- Zod 校验，无效文件不阻断启动，结构化日志记录
+- JSON Skill 与 TS builtin Skill 统一进入 registry
+- API 返回 `source: "builtin" | "json"`
+
+JSON 示例见 `Backend/skills.example/frontend-reading-stats.skill.json`。
+
+### confirmationPolicyAddon
+
+PR2 支持在 Skill 中声明确认策略增强。当前仅注册和透传，PR3 起执行。
+
+```ts
+type ConfirmationPolicyAddon = {
+  mode?: "force-manual" | "allow-auto" | "inherit";
+  reason?: string;
+  requireHumanWhen?: Array<
+    "open-questions" | "low-confidence" | "risk-present" |
+    "writes-files" | "touches-api-contract" | "touches-data-model"
+  >;
+  confidenceFloor?: number;
+};
+```
+
 ### 设计约束
 
-- P0: TypeScript 文件注册，可测试、可审计
+- P0: TypeScript + JSON 声明式注册，Zod 校验，可测试、可审计
 - P1: UI 管理（Skill 编辑器）
 - 不允许用户在 UI 中任意输入代码动态执行
+- 不允许 JSON Skill 定义工具权限或修改 step 顺序
 - 主干 workflow step 数量保持 8 个，Skill 不引入跳步

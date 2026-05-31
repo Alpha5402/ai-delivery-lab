@@ -21,6 +21,8 @@ const envSchema = z.object({
   GITHUB_REPO: z.string().optional(),
   GITHUB_BASE_BRANCH: z.string().default("main"),
   GITHUB_REMOTE: z.string().default("origin"),
+  // JSON Skill 配置目录（不存在时不报错）
+  SKILL_CONFIG_DIR: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);
