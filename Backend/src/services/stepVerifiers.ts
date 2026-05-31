@@ -25,6 +25,7 @@ import type {
   WorkflowStepId,
 } from "../domain/workflow.js";
 import type { WorkspaceContext } from "../domain/workspace.js";
+import { runRegisteredStepVerifier } from "../workflowExecution/verifierRegistry.js";
 
 export type VerifierResult = {
   checks: StepCheck[];
@@ -531,7 +532,7 @@ export function verifyVerification(output: VerificationResult): VerifierResult {
  * 简单 step 的兜底 verifier:仅做"输出非空"判断,默认 auto-continue。
  * 用于 requirement_intake / pull_request 等不需要事实校验的 step。
  */
-function verifyTrivialOutput(label: string, output: unknown): VerifierResult {
+export function verifyTrivialOutput(label: string, output: unknown): VerifierResult {
   const checks: StepCheck[] = [];
   if (output === null || output === undefined) {
     checks.push({
@@ -564,6 +565,12 @@ export function runStepVerifier(
 ): VerifierResult {
   if (output === undefined || output === null) {
     return verifyTrivialOutput(stepId, output);
+  }
+
+  // PR3: 优先走注册表，未注册时 fallback 到硬编码 switch
+  const registryResult = runRegisteredStepVerifier(stepId, output, workspace);
+  if (!registryResult.checks.some((c) => c.id === "registry.missing_verifier")) {
+    return registryResult;
   }
 
   switch (stepId) {
