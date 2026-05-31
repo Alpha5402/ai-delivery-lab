@@ -9,10 +9,11 @@ skillRoutes.get("/", (_req, res) => {
     id: skill.id,
     name: skill.name,
     version: skill.version,
+    source: skill.source ?? "builtin",
     requirementPatterns: skill.requirementPatterns,
     scopes: skill.scopes,
     matchKeywords: skill.match.keywords,
-    stepIds: Object.keys(skill.steps),
+    stepIds: Object.keys(skill.steps ?? {}),
   }));
   res.json(skills);
 });
