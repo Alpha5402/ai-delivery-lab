@@ -303,3 +303,37 @@ export function listSkills() {
 export function getSkill(skillId: string) {
   return request<SkillManifest>(`/skills/${skillId}`);
 }
+
+// ---- Workflow Templates -------------------------------------------------------
+
+export type TemplateStepMeta = {
+  id: string;
+  label: string;
+  agent: string;
+  agentProfileId: string;
+  verifierProfileId: string;
+  outputSchemaId: string;
+  defaultExecutionMode: "automatic" | "manual-confirmation";
+  confirmationPolicy?: { mode?: string; reason?: string };
+  inputRefs: string[];
+};
+
+export type WorkflowTemplateMeta = {
+  id: string;
+  name: string;
+  description?: string;
+  version: number;
+  steps: TemplateStepMeta[];
+};
+
+export function fetchWorkflowTemplates() {
+  return request<Array<{ id: string; name: string; description?: string; version: number; stepCount: number; stepIds: string[] }>>("/templates");
+}
+
+export function fetchDefaultWorkflowTemplate() {
+  return request<WorkflowTemplateMeta>("/templates/default");
+}
+
+export function fetchWorkflowTemplate(id: string) {
+  return request<WorkflowTemplateMeta>(`/templates/${id}`);
+}

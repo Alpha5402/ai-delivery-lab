@@ -7,6 +7,7 @@ import { env } from "./config/env.js";
 import { metricsRoutes } from "./routes/metricsRoutes.js";
 import { repositoryRoutes } from "./routes/repositoryRoutes.js";
 import { skillRoutes } from "./routes/skillRoutes.js";
+import { templateRoutes } from "./routes/templateRoutes.js";
 import { workflowRoutes } from "./routes/workflowRoutes.js";
 import { workspaceRoutes } from "./routes/workspaceRoutes.js";
 import { registerBuiltinSkills } from "./skills/builtin/index.js";
@@ -76,6 +77,7 @@ export function createApp() {
   app.use("/api/repository", repositoryRoutes);
   app.use("/api/metrics", metricsRoutes);
   app.use("/api/skills", skillRoutes);
+  app.use("/api/templates", templateRoutes);
 
   return app;
 }

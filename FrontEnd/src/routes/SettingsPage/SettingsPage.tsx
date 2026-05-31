@@ -9,7 +9,7 @@ import {
   type WorkflowSettings,
   type WorkflowStepExecutionMode,
 } from "../../api/client";
-import { stepAgents, stepLabels, stepOrder } from "../../features/workflow/stepDefinitions";
+import { useDefaultWorkflowTemplate } from "../../features/workflow/workflowTemplate";
 import type { WorkflowStepId } from "../../features/workflow/types";
 import "./SettingsPage.css";
 
@@ -38,6 +38,7 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const { template } = useDefaultWorkflowTemplate(); // API-driven, with fallback
 
   useEffect(() => {
     let cancelled = false;
@@ -69,8 +70,10 @@ export function SettingsPage() {
 
   const dirty = useMemo(() => {
     if (!settings || !draft) return false;
-    return stepOrder.some((step) => settings.stepExecutionModes[step] !== draft.stepExecutionModes[step]);
-  }, [settings, draft]);
+    return template.steps.some((step) =>
+      settings.stepExecutionModes[step.id as WorkflowStepId] !== draft.stepExecutionModes[step.id as WorkflowStepId],
+    );
+  }, [settings, draft, template]);
 
   const handleChange = (stepId: WorkflowStepId, value: WorkflowStepExecutionMode) => {
     setDraft((current) => {
@@ -125,11 +128,13 @@ export function SettingsPage() {
         <Skeleton active paragraph={{ rows: 6 }} />
       ) : (
         <div className="settings-page__list">
-          {stepOrder.map((stepId) => (
+          {template.steps.map((step) => {
+            const stepId = step.id as WorkflowStepId;
+            return (
             <div className="settings-page__row" key={stepId}>
               <div className="settings-page__row-meta">
-                <strong>{stepLabels[stepId]}</strong>
-                <span>{stepAgents[stepId]}　·　{modeDescription[stepId]}</span>
+                <strong>{step.label}</strong>
+                <span>{step.agent}　·　{modeDescription[stepId] ?? `${step.outputSchemaId} / ${step.defaultExecutionMode === "automatic" ? "默认自动" : "默认待审核"}`}</span>
               </div>
               <Segmented
                 options={modeOptions}
@@ -138,7 +143,7 @@ export function SettingsPage() {
                 disabled={stepId === "requirement_intake"}
               />
             </div>
-          ))}
+          )})}
         </div>
       )}
 
