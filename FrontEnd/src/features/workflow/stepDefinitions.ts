@@ -1,5 +1,9 @@
 import type { WorkflowStepId } from "./types";
 
+/**
+ * @deprecated 页面运行时请使用 useDefaultWorkflowTemplate() 从 API 获取。
+ * 保留此文件仅作为 fallback 和向后兼容层。
+ */
 export const stepOrder: WorkflowStepId[] = [
   "requirement_intake",
   "clarification",
