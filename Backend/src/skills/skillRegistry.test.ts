@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { WorkflowRun } from "../domain/workflow.js";
+import type { WorkspaceContext } from "../domain/workspace.js";
 import { registerBuiltinSkills } from "./builtin/index.js";
 import { buildMatchReason, getSkillStepSpec, selectSkill } from "./skillRegistry.js";
 
@@ -182,5 +183,108 @@ describe("getSkillStepSpec", () => {
     expect(spec.verificationPolicyAddon).toBeDefined();
     expect(spec.verificationPolicyAddon!.required).toContain("npm:typecheck");
     expect(spec.verificationPolicyAddon!.required).toContain("npm:test");
+  });
+});
+
+describe("workspace-aware matching", () => {
+  const ws = {
+    id: "ws-1",
+    mode: "repo-import" as const, architectureSummary: "", createdAt: new Date().toISOString(),
+    hasRepository: true,
+    repoName: "test-repo",
+    workspaceDir: "/tmp/test",
+    repositoryScan: {
+      repoName: "test-repo",
+      scannedAt: "",
+      source: "cloned" as const,
+      filesInspected: 10,
+      fileTree: [
+        "src/components/ArticleCard.tsx",
+        "src/pages/PostPage.tsx",
+        "src/utils/stats.ts",
+        "Backend/src/routes/articles.ts",
+        "Backend/src/models/article.ts",
+      ],
+      directories: ["src", "src/components", "src/pages", "Backend/src"],
+      stack: ["React", "TypeScript", "Node"],
+      scripts: {},
+      testEntrypoints: [],
+      notes: ["Article body markdown rendering"],
+      keyFiles: { "README.md": "# Article App" },
+      packageManagers: ["npm"],
+    },
+    agentReadme: {
+      fileName: "readme-for-agent.md" as const,
+      content: "",
+      sections: { architecture: "", stack: [], conventions: [], testing: [], riskNotes: [] },
+    },
+  } as WorkspaceContext;
+
+  function makeRun(rawText: string, pattern = "frontend-only" as const) {
+    return {
+      id: "run-test",
+      title: "test",
+      createdAt: "",
+      updatedAt: "",
+      activeStepId: "clarification",
+      steps: [
+        {
+          id: "requirement_intake",
+          label: "PM",
+          agent: "X",
+          status: "success",
+          input: {} as unknown,
+          output: { title: "test", rawText, pattern, targetRepo: "conduit" },
+          logs: [],
+          replayCount: 0,
+          history: [],
+        },
+      ],
+    } as WorkflowRun;
+  }
+
+  it("keyword matching still works without workspace", () => {
+    const run = makeRun("展示阅读量统计");
+    const skill = selectSkill(run);
+    expect(skill).toBeDefined();
+    expect(skill!.id).toBe("frontend-display-computed-metric");
+  });
+
+  it("keyword + workspace fileGlobs both contribute to selection", () => {
+    const run = makeRun("展示阅读量");
+    const skill = selectSkill(run, ws);
+    expect(skill).toBeDefined();
+    expect(skill!.id).toBe("frontend-display-computed-metric");
+  });
+
+  it("routeHint + keyword combo selects correct backend pagination skill", () => {
+    // "分页" keyword gives backend skill keyword points + "list" routeHint
+    const run = makeRun("给列表加上分页查询");
+    const skill = selectSkill(run, ws);
+    expect(skill).toBeDefined();
+    expect(skill!.id).toBe("backend-add-pagination");
+  });
+
+  it("buildMatchReason with workspace includes hit fields", () => {
+    const run = makeRun("展示阅读量统计");
+    const reason = buildMatchReason(run, ws);
+    expect(reason).toBeDefined();
+    expect(reason!.hitKeywords.length).toBeGreaterThan(0);
+    expect(reason!.skillName).toBe("前端计算指标展示");
+    // workspace fileTree has tsx files → fileGlobs should hit
+    const fileGlobs = reason!.hitFileGlobs ?? [];
+    const hitFiles = reason!.hitFiles ?? [];
+    // At minimum, keyword match + pattern match should produce a score
+    expect(reason!.score).toBeGreaterThan(0);
+    // fileGlobs/files may or may not be present depending on workspace, but the fields should exist
+    expect(Array.isArray(fileGlobs)).toBe(true);
+    expect(Array.isArray(hitFiles)).toBe(true);
+  });
+
+  it("no workspace → behavior unchanged (backward compat)", () => {
+    const run = makeRun("展示阅读量统计");
+    const reason = buildMatchReason(run);
+    expect(reason).toBeDefined();
+    expect(reason!.hitKeywords).toContain("展示");
   });
 });

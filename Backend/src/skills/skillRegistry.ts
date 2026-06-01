@@ -1,6 +1,9 @@
-import type { RequirementDraft, SolutionDsl, WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
+import type { WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
+import type { WorkspaceContext } from "../domain/workspace.js";
 import type { ConfirmationPolicyAddon, SkillManifest, SkillMatchReason, SkillStepSpec } from "./skillTypes.js";
 import { skillManifestSchema } from "./skillTypes.js";
+import { matchFileGlobs, matchRouteHints } from "./globMatcher.js";
+import { buildSkillMatchContext, enrichMatchReason } from "./skillMatchContext.js";
 
 const skills = new Map<string, SkillManifest>();
 
@@ -17,6 +20,14 @@ export function registerJsonSkill(raw: unknown): SkillManifest {
   return skill;
 }
 
+/** 注销一个 Skill。返回 false 如果不存在或是 builtin。 */
+export function unregisterSkill(id: string): boolean {
+  const skill = skills.get(id);
+  if (!skill || skill.source === "builtin") return false;
+  skills.delete(id);
+  return true;
+}
+
 /** 列出所有已注册 Skill 的元信息（供 API / 调试页使用）。 */
 export function listSkills(): SkillManifest[] {
   return [...skills.values()];
@@ -29,85 +40,123 @@ export function getSkill(id: string): SkillManifest | undefined {
 
 type SelectionResult = {
   skill: SkillManifest;
+  score: number;
   hitKeywords: string[];
+  hitFileGlobs: string[];
+  hitFiles: string[];
+  hitRouteHints: string[];
 };
 
 /**
- * 基于当前 run 的上下文选择最匹配的 Skill。
- * 同时返回命中原因（hitKeywords）供 UI 展示。
+ * 基于 run context + workspace 选择最匹配的 Skill。
+ * workspace 可选：不传时 project 信号为空，回退到纯关键词匹配。
  */
-function selectWithReason(run: WorkflowRun): SelectionResult | undefined {
-  const requirement = run.steps.find((s) => s.id === "requirement_intake")?.output as RequirementDraft | undefined;
-  const solution = run.steps.find((s) => s.id === "solution_design")?.output as SolutionDsl | undefined;
+function selectWithReason(run: WorkflowRun, workspace?: WorkspaceContext): SelectionResult | undefined {
+  const ctx = buildSkillMatchContext(run, workspace);
 
-  if (!requirement) return undefined;
+  if (!ctx.requirement) return undefined;
 
-  const rawText = (requirement.rawText ?? "").toLowerCase();
-  const pattern = requirement.pattern;
-  const scope = solution?.scope;
+  const pattern = ctx.requirement.pattern;
+  const scope = ctx.solution?.scope;
 
-  // 打分制：pattern / scope 是加分项而非硬门槛。
-  // 这样 unclear 模式 + fullstack scope 的需求仍然能靠关键词命中 Skill。
   const PATTERN_SCORE = 2;
   const SCOPE_SCORE = 2;
+  const FILEGLOB_SCORE = 2;
+  const ROUTEHINT_SCORE = 2;
+  const MAX_FILEGLOB_BONUS = 6;
+  const MAX_ROUTE_BONUS = 4;
 
-  let best: { skill: SkillManifest; score: number; hitKeywords: string[] } | undefined;
+  let best: SelectionResult | undefined;
 
   for (const skill of skills.values()) {
     let score = 0;
 
-    // pattern 匹配加分
-    if (skill.requirementPatterns.includes(pattern)) {
-      score += PATTERN_SCORE;
-    }
+    if (skill.requirementPatterns.includes(pattern)) score += PATTERN_SCORE;
+    if (scope && skill.scopes.includes(scope)) score += SCOPE_SCORE;
 
-    // scope 匹配加分（无 scope 时不扣分，仅在有 scope 且匹配时加分）
-    if (scope && skill.scopes.includes(scope)) {
-      score += SCOPE_SCORE;
-    }
-
-    // 关键词命中计数
+    // keywords
     const hitKeywords: string[] = [];
     if (skill.match.keywords) {
       for (const kw of skill.match.keywords) {
-        if (rawText.includes(kw.toLowerCase())) {
+        if (ctx.requirementText.includes(kw.toLowerCase())) {
           hitKeywords.push(kw);
           score += 1;
         }
       }
     }
 
-    // 至少命中一个关键词才进入候选；pattern/scope 仅为加分项（tiebreaker）
-    if (hitKeywords.length === 0) continue;
+    // fileGlobs
+    const hitFileGlobs: string[] = [];
+    const hitFiles: string[] = [];
+    const globs = skill.match.fileGlobs ?? [];
+    if (globs.length > 0 && ctx.fileTree.length > 0) {
+      for (const fp of ctx.fileTree) {
+        const matched = matchFileGlobs(fp, globs);
+        if (matched.length > 0) {
+          hitFiles.push(fp);
+          for (const m of matched) {
+            if (!hitFileGlobs.includes(m)) hitFileGlobs.push(m);
+          }
+        }
+      }
+      score += Math.min(hitFileGlobs.length * FILEGLOB_SCORE, MAX_FILEGLOB_BONUS);
+    }
+
+    // routeHints
+    const hitRouteHints: string[] = [];
+    const hints = skill.match.routeHints ?? [];
+    if (hints.length > 0) {
+      hitRouteHints.push(...matchRouteHints(hints, {
+        fileTree: ctx.fileTree,
+        keyFileNames: ctx.keyFileNames,
+        textCorpus: ctx.projectTextCorpus,
+      }));
+      score += Math.min(hitRouteHints.length * ROUTEHINT_SCORE, MAX_ROUTE_BONUS);
+    }
+
+    // 最低入选：至少命中一个关键词，或至少命中一个 routeHint，
+    // 或 fileGlob 需要 ≥2 个命中（防止单一 broad glob 误匹配）
+    const hasKeyword = hitKeywords.length > 0;
+    const hasRouteHint = hitRouteHints.length > 0;
+    const hasStrongFileGlob = hitFileGlobs.length >= 2;
+    if (!hasKeyword && !hasRouteHint && !hasStrongFileGlob) {
+      continue;
+    }
 
     if (!best || score > best.score) {
-      best = { skill, score, hitKeywords };
+      best = { skill, score, hitKeywords, hitFileGlobs, hitFiles, hitRouteHints };
     }
   }
 
-  return best ? { skill: best.skill, hitKeywords: best.hitKeywords } : undefined;
+  return best;
 }
 
-/** 基于当前 run 选择最匹配的 Skill（只返回 manifest，向后兼容）。 */
-export function selectSkill(run: WorkflowRun): SkillManifest | undefined {
-  return selectWithReason(run)?.skill;
+/**
+ * 基于当前 run 选择最匹配的 Skill（只返回 manifest，向后兼容）。
+ * workspace 可选，不传时 project 信号为空。
+ */
+export function selectSkill(run: WorkflowRun, workspace?: WorkspaceContext): SkillManifest | undefined {
+  return selectWithReason(run, workspace)?.skill;
 }
 
-/** 构建命中原因摘要，供运行时 trace 和 UI 展示。 */
-export function buildMatchReason(run: WorkflowRun): SkillMatchReason | undefined {
-  const sel = selectWithReason(run);
+/**
+ * 构建命中原因摘要，供 runtime trace 和 UI 展示。
+ * workspace 可选，不传时 project 信号为空。
+ */
+export function buildMatchReason(run: WorkflowRun, workspace?: WorkspaceContext): SkillMatchReason | undefined {
+  const sel = selectWithReason(run, workspace);
   if (!sel) return undefined;
 
-  const requirement = run.steps.find((s) => s.id === "requirement_intake")?.output as RequirementDraft | undefined;
-  const solution = run.steps.find((s) => s.id === "solution_design")?.output as SolutionDsl | undefined;
+  const ctx = buildSkillMatchContext(run, workspace);
 
-  return {
+  return enrichMatchReason({
     skillId: sel.skill.id,
     skillName: sel.skill.name,
-    matchedPattern: requirement?.pattern ?? "unknown",
-    matchedScope: solution?.scope,
+    matchedPattern: ctx.requirement?.pattern ?? "unknown",
+    matchedScope: ctx.solution?.scope,
     hitKeywords: sel.hitKeywords,
-  };
+    score: sel.score,
+  }, sel.skill, ctx);
 }
 
 /** getSkillStepSpec 的返回类型 */
@@ -130,8 +179,9 @@ export type SkillStepSpecResult = {
 export function getSkillStepSpec(
   run: WorkflowRun,
   stepId: WorkflowStepId,
+  workspace?: WorkspaceContext,
 ): SkillStepSpecResult {
-  const sel = selectWithReason(run);
+  const sel = selectWithReason(run, workspace);
   if (!sel) return {};
 
   const stepSpec: SkillStepSpec | undefined = sel.skill.steps?.[stepId];
@@ -143,6 +193,6 @@ export function getSkillStepSpec(
     contextHints: stepSpec?.contextHints,
     verificationPolicyAddon: stepSpec?.verificationPolicyAddon,
     confirmationPolicyAddon: stepSpec?.confirmationPolicyAddon,
-    skillMatchReason: buildMatchReason(run),
+    skillMatchReason: buildMatchReason(run, workspace),
   };
 }

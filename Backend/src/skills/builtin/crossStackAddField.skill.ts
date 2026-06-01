@@ -18,6 +18,8 @@ export const crossStackAddField: SkillManifest = {
       "添加属性", "数据模型", "新增列", "schema", "migration",
       "数据库", "模型字段", "加一个字段",
     ],
+    fileGlobs: ["**/schema**", "**/migration**", "**/models/**", "**/types/**", "**/api/**", "**/components/**"],
+    routeHints: ["schema", "migration", "model", "DTO", "type", "field", "column"],
   },
   steps: {
     module_mapping: {

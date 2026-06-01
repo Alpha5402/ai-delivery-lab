@@ -18,6 +18,8 @@ export const backendAddPagination: SkillManifest = {
       "排序", "sort", "列表", "limit", "offset", "page",
       "query", "查询", "筛选", "cursor",
     ],
+    fileGlobs: ["**/routes/**", "**/controllers/**", "**/services/**", "**/repositories/**", "**/models/**"],
+    routeHints: ["GET", "list", "findMany", "limit", "offset", "page", "paginate"],
   },
   steps: {
     module_mapping: {

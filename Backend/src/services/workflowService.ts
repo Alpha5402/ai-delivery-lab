@@ -390,7 +390,7 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
     const gateDecision = verifier.qualityGate.decision;
 
     // PR3: 通过 confirmation policy 统一计算是否自动推进
-    const skillSpec = getSkillStepSpec(latest, stepId);
+    const skillSpec = getSkillStepSpec(latest, stepId, getCurrentWorkspace() ?? undefined);
     const confirmation = resolveConfirmationDecision({
       run: latest,
       stepId,

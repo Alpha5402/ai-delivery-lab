@@ -95,4 +95,11 @@ export type SkillMatchReason = {
   matchedPattern: string;
   matchedScope?: string;
   hitKeywords: string[];
+  /** fileGlobs 匹配命中的 pattern */
+  hitFileGlobs?: string[];
+  /** fileGlobs 匹配命中的具体文件路径（截断到 10） */
+  hitFiles?: string[];
+  /** routeHints 匹配命中的 hint */
+  hitRouteHints?: string[];
+  score?: number;
 };
