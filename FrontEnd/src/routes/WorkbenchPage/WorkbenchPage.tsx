@@ -1218,12 +1218,14 @@ function RuntimeStateBanner({
   running,
   onPrimaryAction,
   onSecondaryAction,
+  hasPendingFeedback,
 }: {
   step: StepRun;
   status: RuntimeStatus;
   running: boolean;
   onPrimaryAction: () => void;
   onSecondaryAction?: () => void;
+  hasPendingFeedback?: boolean;
 }) {
   const copy = runtimeStateCopy[status];
   const lastLog = step.logs.at(-1);
@@ -1238,8 +1240,14 @@ function RuntimeStateBanner({
     if (status === "blocked") {
       return (
         <Space>
-          <Button type="primary" onClick={onPrimaryAction} loading={running}>确认并继续</Button>
-          {onSecondaryAction ? <Button onClick={onSecondaryAction}>重新生成</Button> : null}
+          <Button type="primary" onClick={onPrimaryAction} loading={running}>
+            {hasPendingFeedback ? "发送反馈并重新生成" : "确认并继续"}
+          </Button>
+          {onSecondaryAction ? (
+            <Button onClick={onSecondaryAction}>
+              {hasPendingFeedback ? "不提交反馈，直接继续" : "重新生成"}
+            </Button>
+          ) : null}
         </Space>
       );
     }
@@ -1339,7 +1347,9 @@ function StateDrivenWorkspace({
   onSecondaryAction,
   onRestore,
   onWorkspaceViewChange,
+  hasPendingFeedback,
 }: {
+  hasPendingFeedback?: boolean;
   step: StepRun;
   status: RuntimeStatus;
   messages: InterventionMessage[];
@@ -1378,7 +1388,7 @@ function StateDrivenWorkspace({
   if (status === "blocked") {
     return (
       <div className="runtime-state-layout runtime-state-layout--blocked">
-        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
         <StepInterventionWorkspace
           messages={messages}
           onSubmitMessage={onInterventionMessage}
@@ -1392,7 +1402,7 @@ function StateDrivenWorkspace({
   if (status === "running") {
     return (
       <div className="runtime-state-layout runtime-state-layout--running">
-        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
         <section className="running-workspace">
           <div className="running-workspace__pulse">
             <span className="runtime-presence-dot runtime-presence-dot--running" />
@@ -1413,7 +1423,7 @@ function StateDrivenWorkspace({
   if (status === "failed") {
     return (
       <div className="runtime-state-layout runtime-state-layout--failed">
-        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
         <div className="runtime-priority-grid runtime-priority-grid--error">
           <section className="failure-workspace">
             <h3>{step.agent} 执行失败</h3>
@@ -1481,7 +1491,7 @@ function StateDrivenWorkspace({
     if (isPatchReviewStep(step)) {
       return (
         <div className="runtime-state-layout runtime-state-layout--success runtime-state-layout--patch-review">
-          <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+          <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
           <PatchReviewWorkspace repoResult={repoResult} step={step} verification={verification} />
           {rawOutputDisclosure}
           {interventionDisclosure}
@@ -1491,7 +1501,7 @@ function StateDrivenWorkspace({
 
     return (
       <div className="runtime-state-layout runtime-state-layout--success">
-        <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
         {output}
         <PatchReviewWorkspace repoResult={repoResult} step={step} verification={verification} />
         {interventionDisclosure}
@@ -1501,7 +1511,7 @@ function StateDrivenWorkspace({
 
   return (
     <div className="runtime-state-layout runtime-state-layout--waiting">
-      <RuntimeStateBanner onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+      <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
       {output}
       {chat}
     </div>
@@ -1520,6 +1530,10 @@ function SkillBadge({ run, step }: { run: WorkflowRun; step: StepRun }) {
           matchedPattern: string;
           matchedScope?: string;
           hitKeywords: string[];
+          hitFileGlobs?: string[];
+          hitFiles?: string[];
+          hitRouteHints?: string[];
+          score?: number;
         };
       }
     | undefined;
@@ -1533,6 +1547,10 @@ function SkillBadge({ run, step }: { run: WorkflowRun; step: StepRun }) {
     tooltipLines.push(`命中 Pattern: ${reason.matchedPattern}`);
     if (reason.matchedScope) tooltipLines.push(`Scope: ${reason.matchedScope}`);
     if (reason.hitKeywords.length) tooltipLines.push(`命中关键词: ${reason.hitKeywords.join(", ")}`);
+    if (reason.hitFileGlobs?.length) tooltipLines.push(`命中文件规则: ${reason.hitFileGlobs.join(", ")}`);
+    if (reason.hitFiles?.length) tooltipLines.push(`命中文件: ${reason.hitFiles.slice(0, 5).join(", ")}${(reason.hitFiles.length > 5) ? " …" : ""}`);
+    if (reason.hitRouteHints?.length) tooltipLines.push(`命中路由提示: ${reason.hitRouteHints.join(", ")}`);
+    if (reason.score != null) tooltipLines.push(`匹配分数: ${reason.score}`);
   }
 
   return (
@@ -2012,12 +2030,20 @@ export function WorkbenchPage() {
               onDraftChange={setChatDraft}
               onInterventionMessage={submitInterventionMessage}
               onInterventionSubmit={handleInterventionSubmit}
-              onPrimaryAction={activeRuntimeStatus === "success" ? () => handleReplay(activeStep.id) : completeCurrentStep}
+              onPrimaryAction={
+                activeRuntimeStatus === "success" ? () => handleReplay(activeStep.id)
+                : activeRuntimeStatus === "blocked" && chatDraft.trim()
+                  ? () => submitInterventionMessage(chatDraft)
+                  : completeCurrentStep
+              }
               onRestore={handleRestore}
+              hasPendingFeedback={activeRuntimeStatus === "blocked" && chatDraft.trim() !== ""}
               onSecondaryAction={
-                activeRuntimeStatus === "blocked"
-                  ? () => runWorkflowStep(run.id, activeStep.id).then(setRun).catch(() => undefined)
-                  : undefined
+                activeRuntimeStatus === "blocked" && chatDraft.trim()
+                  ? completeCurrentStep
+                  : activeRuntimeStatus === "blocked"
+                    ? () => runWorkflowStep(run.id, activeStep.id).then(setRun).catch(() => undefined)
+                    : undefined
               }
               onWorkspaceViewChange={setWorkspaceView}
               repoResult={repoResult}

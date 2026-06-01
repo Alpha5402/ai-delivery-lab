@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Alert, Button, Card, Segmented, Skeleton, Space, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Input, Modal, Segmented, Skeleton, Space, Tag, Typography, message } from "antd";
 import {
+  createJsonSkill,
+  deleteJsonSkill,
   fetchWorkflowSettings,
   listSkills,
+  updateJsonSkill,
   updateWorkflowSettings,
   type SkillSummary,
   type WorkflowSettings,
@@ -38,6 +41,10 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editorJson, setEditorJson] = useState("");
+  const [editorError, setEditorError] = useState("");
   const { template } = useDefaultWorkflowTemplate(); // API-driven, with fallback
 
   useEffect(() => {
@@ -147,7 +154,12 @@ export function SettingsPage() {
         </div>
       )}
 
-      <Card title="已注册 Skill" size="small" style={{ marginTop: 24 }}>
+      <Card
+        title="已注册 Skill"
+        size="small"
+        style={{ marginTop: 24 }}
+        extra={<Button size="small" onClick={() => { setEditingId(null); setEditorJson(""); setEditorError(""); setEditorOpen(true); }}>+ 新增</Button>}
+      >
         {skills.length === 0 ? (
           <Text type="secondary">暂无已注册的 Skill。后端启动时自动注册 builtin/ 下的 Skill 文件。</Text>
         ) : (
@@ -157,6 +169,7 @@ export function SettingsPage() {
                 <strong>{skill.name}</strong>
                 <Tag color="purple">{skill.id}</Tag>
                 <Tag variant="outlined">v{skill.version}</Tag>
+                <Tag color={skill.source === "builtin" ? "default" : "orange"}>{skill.source}</Tag>
               </Space>
               <div>
                 <Space wrap size={4}>
@@ -170,10 +183,63 @@ export function SettingsPage() {
                   {skill.matchKeywords?.length ? `　·　关键词: ${skill.matchKeywords.slice(0, 8).join(", ")}${skill.matchKeywords.length > 8 ? "…" : ""}` : ""}
                 </Text>
               </div>
+              {skill.source !== "builtin" && (
+                <Space size={4} style={{ marginTop: 4 }}>
+                  <Button size="small" onClick={async () => {
+                    const full = await import("../../api/client").then((m) => m.getSkill(skill.id));
+                    setEditingId(skill.id);
+                    setEditorJson(JSON.stringify(full, null, 2));
+                    setEditorError("");
+                    setEditorOpen(true);
+                  }}>编辑</Button>
+                  <Button size="small" danger onClick={async () => {
+                    try {
+                      await deleteJsonSkill(skill.id);
+                      setSkills((prev) => prev.filter((s) => s.id !== skill.id));
+                      message.success("已删除");
+                    } catch (e) { message.error(e instanceof Error ? e.message : "删除失败"); }
+                  }}>删除</Button>
+                </Space>
+              )}
             </div>
           ))
         )}
       </Card>
+
+      <Modal
+        open={editorOpen}
+        title={editingId ? `编辑 ${editingId}` : "新增 JSON Skill"}
+        width={700}
+        onCancel={() => setEditorOpen(false)}
+        onOk={async () => {
+          setEditorError("");
+          let parsed: unknown;
+          try { parsed = JSON.parse(editorJson); } catch {
+            setEditorError("JSON 格式无效"); return;
+          }
+          try {
+            const saved = editingId
+              ? await updateJsonSkill(editingId, parsed as Record<string, unknown>)
+              : await createJsonSkill(parsed as Record<string, unknown>);
+            setSkills((prev) => {
+              const summary: SkillSummary = { id: saved.id, name: saved.name, version: saved.version, source: saved.source ?? "json", requirementPatterns: saved.requirementPatterns, scopes: saved.scopes, matchKeywords: saved.match.keywords, stepIds: Object.keys(saved.steps ?? {}) };
+              const filtered = prev.filter((s) => s.id !== saved.id);
+              return [...filtered, summary];
+            });
+            setEditorOpen(false);
+            message.success(editingId ? "已更新" : "已创建");
+          } catch (e) { setEditorError(e instanceof Error ? e.message : "保存失败"); }
+        }}
+      >
+        {editorError && <Alert type="error" message={editorError} style={{ marginBottom: 8 }} />}
+        <Input.TextArea
+          rows={16}
+          value={editorJson}
+          onChange={(e) => setEditorJson(e.target.value)}
+          placeholder='{"id": "my-skill", "name": "...", ...}'
+          style={{ fontFamily: "monospace", fontSize: 12 }}
+        />
+      </Modal>
 
       <div className="settings-page__footer">
         <Space>

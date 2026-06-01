@@ -28,6 +28,13 @@ export function unregisterSkill(id: string): boolean {
   return true;
 }
 
+/** 测试辅助：清空所有非 builtin Skill（仅用于测试隔离） */
+export function resetNonBuiltinSkills(): void {
+  for (const [id, skill] of skills.entries()) {
+    if (skill.source !== "builtin") skills.delete(id);
+  }
+}
+
 /** 列出所有已注册 Skill 的元信息（供 API / 调试页使用）。 */
 export function listSkills(): SkillManifest[] {
   return [...skills.values()];
