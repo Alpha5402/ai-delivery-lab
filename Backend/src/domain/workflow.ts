@@ -408,6 +408,10 @@ export type WorkflowRun = {
     matchedPattern: string;
     matchedScope?: string;
     hitKeywords: string[];
+    hitFileGlobs?: string[];
+    hitFiles?: string[];
+    hitRouteHints?: string[];
+    score?: number;
   };
 };
 

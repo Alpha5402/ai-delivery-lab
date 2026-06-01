@@ -280,6 +280,7 @@ export type SkillSummary = {
   id: string;
   name: string;
   version: string;
+  source?: "builtin" | "json";
   requirementPatterns: string[];
   scopes: string[];
   matchKeywords?: string[];
@@ -302,6 +303,18 @@ export function listSkills() {
 
 export function getSkill(skillId: string) {
   return request<SkillManifest>(`/skills/${skillId}`);
+}
+
+export function createJsonSkill(body: Record<string, unknown>) {
+  return request<SkillManifest>("/skills/json", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateJsonSkill(skillId: string, body: Record<string, unknown>) {
+  return request<SkillManifest>(`/skills/json/${skillId}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteJsonSkill(skillId: string) {
+  return request<void>(`/skills/json/${skillId}`, { method: "DELETE" });
 }
 
 // ---- Workflow Templates -------------------------------------------------------

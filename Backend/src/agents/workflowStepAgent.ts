@@ -91,7 +91,7 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
   }
 
   // layer 3: Skill 注入 addon
-  const skillSpec = getSkillStepSpec(run, stepId);
+  const skillSpec = getSkillStepSpec(run, stepId, getCurrentWorkspace() ?? undefined);
   if (skillSpec.instructionAddon) {
     instruction = `${instruction}\n${skillSpec.instructionAddon}`;
   }
@@ -144,7 +144,7 @@ async function runVerificationStep(run: WorkflowRun) {
 
   // 动态:基于 pattern/scope + Skill 的 addon 决定哪些命令必选/可选。
   const ctx = deriveRouterContext(run);
-  const skillSpecForVerify = getSkillStepSpec(run, "verification");
+  const skillSpecForVerify = getSkillStepSpec(run, "verification", getCurrentWorkspace() ?? undefined);
   const policy = verificationCommandPolicy(ctx, skillSpecForVerify.verificationPolicyAddon);
 
   const commandResults: VerificationCommandResult[] = [];
@@ -362,7 +362,7 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
     estimatedCost: 0,
   });
 
-  const skillSpecForWrite = getSkillStepSpec(run, "repo_write");
+  const skillSpecForWrite = getSkillStepSpec(run, "repo_write", getCurrentWorkspace() ?? undefined);
 
   return {
     ...parsed.data,

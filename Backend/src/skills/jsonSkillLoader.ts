@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { env } from "../config/env.js";
 import { registerJsonSkill } from "./skillRegistry.js";
@@ -90,4 +90,33 @@ export function loadJsonSkillsFromDir(dir: string): JsonSkillLoadResult {
 export function loadAndRegisterJsonSkills(dir?: string): JsonSkillLoadResult {
   const target = dir ?? env.SKILL_CONFIG_DIR ?? path.resolve(process.cwd(), "skills");
   return loadJsonSkillsFromDir(target);
+}
+
+/** 安全校验 skill id，防止路径穿越和非法字符 */
+function safeSkillId(id: string): string {
+  if (!/^[a-z0-9][-a-z0-9]*[a-z0-9]?$/i.test(id) || id.includes("..") || id.includes("/")) {
+    throw new Error(`Invalid skill id: ${id}`);
+  }
+  return id;
+}
+
+function resolveSkillDir(): string {
+  return process.env.SKILL_CONFIG_DIR || (env.SKILL_CONFIG_DIR ?? path.resolve(process.cwd(), "skills"));
+}
+
+function skillFilePath(id: string): string {
+  return path.join(resolveSkillDir(), `${safeSkillId(id)}.skill.json`);
+}
+
+/** 写入 JSON Skill 文件（覆盖已存在） */
+export function writeJsonSkillFile(id: string, content: unknown): void {
+  const dir = resolveSkillDir();
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(skillFilePath(id), JSON.stringify(content, null, 2), "utf-8");
+}
+
+/** 删除 JSON Skill 文件 */
+export function deleteJsonSkillFile(id: string): void {
+  const fp = skillFilePath(id);
+  if (existsSync(fp)) unlinkSync(fp);
 }

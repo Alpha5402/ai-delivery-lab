@@ -18,6 +18,8 @@ export const frontendDisplayComputedMetric: SkillManifest = {
       "展示", "指标", "computed", "metric", "view count",
       "like count", "点赞数", "评论数", "字符数",
     ],
+    fileGlobs: ["src/components/**/*.tsx", "src/routes/**/*.tsx", "src/hooks/**", "src/utils/**"],
+    routeHints: ["Article", "Post", "文章", "body", "markdown", "page", "component"],
   },
   steps: {
     module_mapping: {

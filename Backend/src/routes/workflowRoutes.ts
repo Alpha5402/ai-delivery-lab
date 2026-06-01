@@ -18,6 +18,7 @@ import {
   runStep,
   updateStepOutput,
 } from "../services/workflowService.js";
+import { getCurrentWorkspace } from "../services/workspaceService.js";
 import { workflowEventBus } from "../services/workflowEvents.js";
 import {
   getWorkflowSettings,
@@ -29,7 +30,7 @@ import type { WorkflowRun } from "../domain/workflow.js";
 
 /** 在返回给前端前注入 Skill 命中信息（run 级别）。 */
 function enrichWithSkill(run: WorkflowRun): WorkflowRun {
-  const reason = buildMatchReason(run);
+  const reason = buildMatchReason(run, getCurrentWorkspace() ?? undefined);
   if (reason) {
     return { ...run, selectedSkillId: reason.skillId, skillMatchReason: reason };
   }
