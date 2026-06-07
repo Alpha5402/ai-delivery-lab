@@ -1,5 +1,5 @@
 import type { AgentMetric } from "../../features/observability/types";
-import { formatCurrency, formatDuration } from "../../lib/formatters";
+import { formatCurrency, formatDuration, formatTokenCount } from "../../lib/formatters";
 import "./AgentCard.css";
 
 export function AgentCard({ metric }: { metric: AgentMetric }) {
@@ -10,7 +10,7 @@ export function AgentCard({ metric }: { metric: AgentMetric }) {
         <span>{metric.calls} calls</span>
       </div>
       <dl>
-        <div><dt>Tokens</dt><dd>{metric.inputTokens + metric.outputTokens}</dd></div>
+        <div><dt>Tokens</dt><dd>{formatTokenCount(metric.inputTokens + metric.outputTokens)}</dd></div>
         <div><dt>Latency</dt><dd>{formatDuration(metric.latencyMs)}</dd></div>
         <div><dt>Cost</dt><dd>{formatCurrency(metric.estimatedCost)}</dd></div>
       </dl>

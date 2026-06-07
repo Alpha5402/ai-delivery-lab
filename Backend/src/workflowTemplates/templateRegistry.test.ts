@@ -105,6 +105,13 @@ describe("domain/workflow.ts consistency with default template", () => {
         .toBe(step.defaultExecutionMode);
     }
   });
+
+  it("repo_write waits for review after writing files", () => {
+    const t = getDefaultWorkflowTemplate();
+    const repoWrite = t.steps.find((step) => step.id === "repo_write");
+    expect(repoWrite?.defaultExecutionMode).toBe("manual-confirmation");
+    expect(defaultStepExecutionModes.repo_write).toBe("manual-confirmation");
+  });
 });
 
 describe("workflowSettingsService derived modes", () => {

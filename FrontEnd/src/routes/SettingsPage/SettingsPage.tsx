@@ -1,19 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Alert, Button, Card, Input, Modal, Segmented, Skeleton, Space, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Segmented, Skeleton, Space, Tag, Typography, message } from "antd";
 import {
-  createJsonSkill,
   deleteJsonSkill,
   fetchWorkflowSettings,
+  getSkill,
   listSkills,
-  updateJsonSkill,
   updateWorkflowSettings,
+  type SkillManifest,
   type SkillSummary,
   type WorkflowSettings,
   type WorkflowStepExecutionMode,
 } from "../../api/client";
 import { useDefaultWorkflowTemplate } from "../../features/workflow/workflowTemplate";
 import type { WorkflowStepId } from "../../features/workflow/types";
+import { SkillEditorModal } from "./SkillEditorModal";
 import "./SettingsPage.css";
 
 const { Title, Paragraph, Text } = Typography;
@@ -24,14 +25,14 @@ const modeOptions: { label: string; value: WorkflowStepExecutionMode }[] = [
 ];
 
 const modeDescription: Record<WorkflowStepId, string> = {
-  requirement_intake: "PM 需求入口，通常无需干预。",
-  clarification: "澄清 Agent 输出 questions，建议人工确认。",
-  solution_design: "方案 DSL 是后续生成的基础，建议人工 review。",
-  module_mapping: "模块定位结果，可自动续跑。",
-  code_generation: "代码计划影响实际写入，建议人工 review。",
-  repo_write: "写入仓库结果，可自动续跑。",
-  verification: "Lint / 单测验证，可自动续跑。",
-  pull_request: "提交 PR 涉及外部副作用，建议人工确认。",
+  requirement_intake: "接收用户需求，通常无需干预。",
+  clarification: "确认关键需求与约束，建议人工确认。",
+  solution_design: "生成交付方案，是后续修改的基础，建议人工确认。",
+  module_mapping: "定位相关代码与模块，可自动续跑。",
+  code_generation: "准备修改内容，影响实际写入，建议人工确认。",
+  repo_write: "写入变更会真实修改文件，必须人工确认后再验证。",
+  verification: "验证结果可自动续跑。",
+  pull_request: "准备 PR 涉及外部副作用，建议人工确认。",
 };
 
 export function SettingsPage() {
@@ -42,9 +43,7 @@ export function SettingsPage() {
   const [errorText, setErrorText] = useState<string | null>(null);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [editorOpen, setEditorOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editorJson, setEditorJson] = useState("");
-  const [editorError, setEditorError] = useState("");
+  const [editingSkill, setEditingSkill] = useState<SkillManifest | null>(null);
   const { template } = useDefaultWorkflowTemplate(); // API-driven, with fallback
 
   useEffect(() => {
@@ -158,7 +157,7 @@ export function SettingsPage() {
         title="已注册 Skill"
         size="small"
         style={{ marginTop: 24 }}
-        extra={<Button size="small" onClick={() => { setEditingId(null); setEditorJson(""); setEditorError(""); setEditorOpen(true); }}>+ 新增</Button>}
+        extra={<Button size="small" onClick={() => { setEditingSkill(null); setEditorOpen(true); }}>+ 新增</Button>}
       >
         {skills.length === 0 ? (
           <Text type="secondary">暂无已注册的 Skill。后端启动时自动注册 builtin/ 下的 Skill 文件。</Text>
@@ -186,10 +185,8 @@ export function SettingsPage() {
               {skill.source !== "builtin" && (
                 <Space size={4} style={{ marginTop: 4 }}>
                   <Button size="small" onClick={async () => {
-                    const full = await import("../../api/client").then((m) => m.getSkill(skill.id));
-                    setEditingId(skill.id);
-                    setEditorJson(JSON.stringify(full, null, 2));
-                    setEditorError("");
+                    const full = await getSkill(skill.id);
+                    setEditingSkill(full);
                     setEditorOpen(true);
                   }}>编辑</Button>
                   <Button size="small" danger onClick={async () => {
@@ -206,40 +203,17 @@ export function SettingsPage() {
         )}
       </Card>
 
-      <Modal
+      <SkillEditorModal
         open={editorOpen}
-        title={editingId ? `编辑 ${editingId}` : "新增 JSON Skill"}
-        width={700}
-        onCancel={() => setEditorOpen(false)}
-        onOk={async () => {
-          setEditorError("");
-          let parsed: unknown;
-          try { parsed = JSON.parse(editorJson); } catch {
-            setEditorError("JSON 格式无效"); return;
+        editingSkill={editingSkill}
+        onClose={async (saved) => {
+          setEditorOpen(false);
+          if (saved) {
+            const updated = await listSkills();
+            setSkills(updated);
           }
-          try {
-            const saved = editingId
-              ? await updateJsonSkill(editingId, parsed as Record<string, unknown>)
-              : await createJsonSkill(parsed as Record<string, unknown>);
-            setSkills((prev) => {
-              const summary: SkillSummary = { id: saved.id, name: saved.name, version: saved.version, source: saved.source ?? "json", requirementPatterns: saved.requirementPatterns, scopes: saved.scopes, matchKeywords: saved.match.keywords, stepIds: Object.keys(saved.steps ?? {}) };
-              const filtered = prev.filter((s) => s.id !== saved.id);
-              return [...filtered, summary];
-            });
-            setEditorOpen(false);
-            message.success(editingId ? "已更新" : "已创建");
-          } catch (e) { setEditorError(e instanceof Error ? e.message : "保存失败"); }
         }}
-      >
-        {editorError && <Alert type="error" message={editorError} style={{ marginBottom: 8 }} />}
-        <Input.TextArea
-          rows={16}
-          value={editorJson}
-          onChange={(e) => setEditorJson(e.target.value)}
-          placeholder='{"id": "my-skill", "name": "...", ...}'
-          style={{ fontFamily: "monospace", fontSize: 12 }}
-        />
-      </Modal>
+      />
 
       <div className="settings-page__footer">
         <Space>

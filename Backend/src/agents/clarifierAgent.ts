@@ -24,14 +24,14 @@ export async function runClarifierAgent(
   followUp?: ClarifierFollowUpInput,
 ): Promise<ClarificationOutput> {
   const systemLines = [
-    "你是 Conduit 全栈需求澄清 Agent。请分析 PM 需求并输出 JSON。",
+    "你是 AI Delivery Workspace 的需求确认 AI。请分析用户需求并输出 JSON。",
     "",
     "## 输出字段",
     "必须包含 summary, decisions, questions, clarificationComplete, confidence。",
     "",
     "### decisions[] — 已解决的规则/决策",
     "每项含 id, title, question, finalAnswer, source。",
-    "  - source: \"agent-inferred\"（Agent 自行推断）或 \"user-confirmed\"（用户反馈确认）",
+    "  - source: \"agent-inferred\"（AI 自行推断）或 \"user-confirmed\"（用户反馈确认）",
     "  - 这些决策将传递给 solution_design 使用，不会显示给用户再次审核",
     "",
     "### questions[] — 仍需用户审核的开放问题",
@@ -117,10 +117,10 @@ export async function runClarifierAgent(
       role: "user",
       content: JSON.stringify(userPayload),
     },
-  ], clarificationOutputSchema, { label: followUp ? "Clarifier Agent (follow-up)" : "Clarifier Agent" });
+  ], clarificationOutputSchema, { label: followUp ? "确认需求（反馈）" : "确认需求" });
 
   recordMetric({
-    agent: followUp ? "Clarifier Agent (follow-up)" : "Clarifier Agent",
+    agent: followUp ? "确认需求（反馈）" : "确认需求",
     calls: 1,
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Button, Card, Input, Modal, Skeleton, Space, Spin, Timeline, Typography, message } from "antd";
+import { Alert, Button, Input, Modal, Skeleton, Space, Spin, Timeline, Typography, message } from "antd";
 import { deleteProjectWorkspace, importWorkspace, listRecentProjects, openWorkspace } from "../../api/client";
 import type { ProjectWorkspace } from "../../features/workspace/types";
 import { saveWorkspace } from "../../features/workspace/workspaceStorage";
@@ -8,7 +8,7 @@ import "./StartPage.css";
 
 const { Paragraph, Text, Title } = Typography;
 
-const defaultRepoUrl = "https://github.com/TonyMckes/conduit-realworld-example-app.git";
+const defaultRepoUrl = "https://github.com/gothinkster/react-redux-realworld-example-app.git";
 
 type StartFlowType = "local" | "git";
 type StepStatus = "wait" | "loading" | "finish" | "error";
@@ -29,16 +29,16 @@ function createInitialSteps(type: StartFlowType): StartFlowStep[] {
   if (type === "git") {
     return [
       { key: "clone-repo", title: "克隆 Git 仓库", description: "正在获取远程仓库代码。", status: "wait" },
-      { key: "check-agent-readme", title: "检查智能体上下文", description: "检查仓库内是否存在 readme-for-agent.md。", status: "wait" },
-      { key: "generate-agent-readme", title: "生成智能体上下文", description: "调用仓库上下文智能体生成项目说明。", status: "wait" },
+      { key: "check-agent-readme", title: "检查 AI 上下文", description: "检查仓库内是否存在 readme-for-agent.md。", status: "wait" },
+      { key: "generate-agent-readme", title: "生成 AI 上下文", description: "调用仓库上下文能力生成项目说明。", status: "wait" },
       { key: "enter-workspace", title: "进入工作区", description: "保存工作区并进入交付工作台。", status: "wait" },
     ];
   }
 
   return [
     { key: "open-local", title: "打开项目目录", description: "读取本地项目路径。", status: "wait" },
-    { key: "check-agent-readme", title: "检查智能体上下文", description: "检查目录内是否存在 readme-for-agent.md。", status: "wait" },
-    { key: "generate-agent-readme", title: "生成智能体上下文", description: "调用仓库上下文智能体生成项目说明。", status: "wait" },
+    { key: "check-agent-readme", title: "检查 AI 上下文", description: "检查目录内是否存在 readme-for-agent.md。", status: "wait" },
+    { key: "generate-agent-readme", title: "生成 AI 上下文", description: "调用仓库上下文能力生成项目说明。", status: "wait" },
     { key: "enter-workspace", title: "进入工作区", description: "保存工作区并进入交付工作台。", status: "wait" },
   ];
 }
@@ -96,6 +96,18 @@ function getRecentWorkspaceActivity(project: ProjectWorkspace) {
   }
 
   return latestRun.currentStep ? `最近运行：${latestRun.currentStep}` : latestRun.title;
+}
+
+function getRecentWorkspaceAction(project: ProjectWorkspace) {
+  const latestRun = [...project.workflowRuns].sort((left, right) => {
+    return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+  })[0];
+
+  if (!latestRun) return "创建任务";
+  if (latestRun.status === "paused") return "继续处理";
+  if (latestRun.status === "running") return "查看进度";
+  if (latestRun.status === "failed") return "查看失败";
+  return "查看结果";
 }
 
 function WorkspaceImportTimeline({ steps, error }: { steps: StartFlowStep[]; error: string }) {
@@ -305,43 +317,16 @@ export function StartPage() {
 
   return (
     <main className="start-page">
-      <section className="start-page__hero">
-        <Text className="start-page__eyebrow">Conduit Runtime</Text>
-        <Title level={1}>从端到端，将你的 idea 落地成现实</Title>
-        <Paragraph>
-          打开一个仓库，描述一次真实开发需求，然后进入可澄清、可规划、可定位上下文、可生成变更、可验证结果的 AI 运行时。
-        </Paragraph>
-        <Paragraph type="secondary">
-          每一次工作流运行都会保留在项目工作区中，后续可以继续恢复、人工介入或从任意节点回放。
-        </Paragraph>
-      </section>
-
-      <section className="start-page__actions" aria-label="Primary workspace actions">
-        <Card
-          className={`start-action-card ${selectedFlow === "local" ? "start-action-card--active" : ""}`}
-          hoverable
-          onClick={() => openFlowModal("local")}
-        >
-          <Space direction="vertical" size={10}>
-            <Text className="start-action-card__kicker">本地工作区</Text>
-            <Title level={3}>打开项目</Title>
-            <Paragraph>接入已有代码库，让运行时生成可供智能体使用的项目上下文。</Paragraph>
-            <Button type="primary">选择本地项目</Button>
-          </Space>
-        </Card>
-
-        <Card
-          className={`start-action-card ${selectedFlow === "git" ? "start-action-card--active" : ""}`}
-          hoverable
-          onClick={() => openFlowModal("git")}
-        >
-          <Space direction="vertical" size={10}>
-            <Text className="start-action-card__kicker">远程仓库</Text>
-            <Title level={3}>从 Git 克隆</Title>
-            <Paragraph>克隆远程仓库，解析项目结构，并准备可持续运行的工作流空间。</Paragraph>
-            <Button type="primary">输入 Git URL</Button>
-          </Space>
-        </Card>
+      <section className="start-page__header">
+        <div>
+          <Text className="start-page__eyebrow">AI Delivery Workspace</Text>
+          <Title level={1}>工作区</Title>
+          <Paragraph>继续已有项目，或接入一个新代码库。</Paragraph>
+        </div>
+        <Space wrap>
+          <Button type="primary" onClick={() => openFlowModal("local")}>打开本地项目</Button>
+          <Button onClick={() => openFlowModal("git")}>克隆 Git 仓库</Button>
+        </Space>
       </section>
 
       <section className="recent-projects">
@@ -365,6 +350,7 @@ export function StartPage() {
                   <span className="recent-project-card__name">{project.name}</span>
                   <span className="recent-project-card__activity">{getRecentWorkspaceActivity(project)}</span>
                   <span className="recent-project-card__meta">上次打开 {formatRelativeTime(project.lastOpenedAt)}</span>
+                  <span className="recent-project-card__action">{getRecentWorkspaceAction(project)}</span>
                 </button>
                 <Button danger type="text" size="small" loading={deletingProjectId === project.id} onClick={() => confirmDeleteProject(project)}>
                   删除
@@ -398,7 +384,7 @@ export function StartPage() {
               本地项目路径
               <Input value={localPath} onChange={(event) => setLocalPath(event.target.value)} placeholder="/Users/alpha/Github/project" disabled={isRunning} />
             </label>
-            <Text type="secondary">选择一个已有代码库目录，运行时会检查或生成智能体上下文。</Text>
+            <Text type="secondary">选择一个已有代码库目录，AI 会检查或生成项目上下文。</Text>
           </form>
         ) : null}
 

@@ -18,8 +18,9 @@ import { workflowEventBus } from "./workflowEvents.js";
  * 当前语义：
  *  - 高风险/语义决策步骤(clarification、solution_design、code_generation、pull_request)
  *    默认需要人工确认;
- *  - 低风险/事实采集步骤(requirement_intake、module_mapping、repo_write、verification)
+ *  - 低风险/事实采集步骤(requirement_intake、module_mapping、verification)
  *    默认自动续跑,但都被 Quality Gate 二次约束。
+ *  - repo_write 会真实修改文件，落盘完成后必须等待用户确认再进入验证。
  *  用户可在 Settings 页覆盖。
  */
 function deriveDefaultModes(): Record<WorkflowStepId, StepExecutionMode> {
@@ -37,7 +38,7 @@ function deriveDefaultModes(): Record<WorkflowStepId, StepExecutionMode> {
     solution_design: "manual-confirmation",
     module_mapping: "automatic",
     code_generation: "manual-confirmation",
-    repo_write: "automatic",
+    repo_write: "manual-confirmation",
     verification: "automatic",
     pull_request: "manual-confirmation",
   };
@@ -85,6 +86,10 @@ function readFromDisk(): WorkflowSettings {
       stepExecutionModes: {
         ...defaultStepExecutionModes,
         ...parsed.data.stepExecutionModes,
+        // 迁移旧默认值：repo_write 会真实写文件，不能沿用早期 automatic 默认。
+        repo_write: parsed.data.stepExecutionModes.repo_write === "automatic"
+          ? "manual-confirmation"
+          : (parsed.data.stepExecutionModes.repo_write ?? defaultStepExecutionModes.repo_write),
       },
     };
   } catch {

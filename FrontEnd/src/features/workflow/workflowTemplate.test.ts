@@ -39,14 +39,14 @@ describe("workflowTemplate utilities", () => {
 
   it("deriveStepLabels returns correct labels", () => {
     const labels = deriveStepLabels(FALLBACK_TEMPLATE);
-    expect(labels["requirement_intake"]).toBe("PM 输入");
-    expect(labels["pull_request"]).toBe("提交 PR");
+    expect(labels["requirement_intake"]).toBe("接收需求");
+    expect(labels["pull_request"]).toBe("准备 PR");
   });
 
   it("deriveStepAgents returns correct agents", () => {
     const agents = deriveStepAgents(FALLBACK_TEMPLATE);
-    expect(agents["clarification"]).toBe("Clarifier Agent");
-    expect(agents["verification"]).toBe("Verifier");
+    expect(agents["clarification"]).toBe("确认需求");
+    expect(agents["verification"]).toBe("验证结果");
   });
 
   it("FALLBACK_TEMPLATE has all required step fields", () => {
@@ -56,6 +56,11 @@ describe("workflowTemplate utilities", () => {
       expect(step.agent).toBeTruthy();
       expect(["automatic", "manual-confirmation"]).toContain(step.defaultExecutionMode);
     }
+  });
+
+  it("repo_write waits for review in the fallback template", () => {
+    expect(FALLBACK_TEMPLATE.steps.find((step) => step.id === "repo_write")?.defaultExecutionMode)
+      .toBe("manual-confirmation");
   });
 });
 

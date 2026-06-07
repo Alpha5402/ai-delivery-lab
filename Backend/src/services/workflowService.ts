@@ -65,12 +65,12 @@ function createSteps(requirement: RequirementDraft): StepRun[] {
     output: index === 0 ? requirement : undefined,
     startedAt: index === 0 ? now() : undefined,
     finishedAt: index === 0 ? now() : undefined,
-    logs: index === 0 ? ["PM 需求已接收", "Runtime Trigger 已创建，自动进入 Clarifier Agent"] : [],
+    logs: index === 0 ? ["需求已接收", "AI Delivery Workspace 已创建任务，自动进入确认需求"] : [],
     interventions: index === 0 ? [{
       id: `${stepId}-agent-${Date.now()}`,
       stepId,
       role: "agent",
-      content: "已接收需求，Runtime 将自动进入下一个 Agent Step。",
+      content: "已接收需求，AI 将自动进入下一个阶段。",
       createdAt: now(),
     }] : [],
     replayCount: 0,
@@ -598,7 +598,7 @@ export function getStepHistory(runId: string, stepId: WorkflowStepId) {
   return step.history ?? [];
 }
 
-export function restoreStepSnapshot(runId: string, stepId: WorkflowStepId, snapshotId: string, replayDownstream = false) {
+export function restoreStepSnapshot(runId: string, stepId: WorkflowStepId, snapshotId: string, _replayDownstream?: boolean) {
   const run = getExistingRun(runId);
   const stepIndex = stepOrder.indexOf(stepId);
   const step = run.steps[stepIndex];
@@ -617,14 +617,25 @@ export function restoreStepSnapshot(runId: string, stepId: WorkflowStepId, snaps
       };
     }
 
-    if (replayDownstream && index > stepIndex) {
+    // 下游步骤无条件重置为 idle，但只有曾经执行过的步骤才追加失效日志
+    if (index > stepIndex) {
+      const hadExecution =
+        current.output !== undefined ||
+        current.status !== "idle" ||
+        current.startedAt !== undefined ||
+        current.finishedAt !== undefined ||
+        current.logs.length > 0;
+
       return {
         ...current,
         status: "idle" as const,
         output: undefined,
         startedAt: undefined,
         finishedAt: undefined,
-        logs: [],
+        // 还原不增加 replayCount，不新增 history snapshot
+        logs: hadExecution
+          ? [...current.logs, "因上游步骤还原，此步骤结果已失效，需重新生成"]
+          : current.logs,
       };
     }
 

@@ -1,7 +1,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useParams } from "react-router-dom";
-import { Alert, Button, Card, Collapse, Input, Space, Statistic, Tabs, Tag, Timeline, Tooltip, Typography } from "antd";
+import { Alert, Button, Card, Collapse, Input, Modal, Progress, Space, Statistic, Tabs, Tag, Timeline, Tooltip, Typography, message } from "antd";
 import {
   confirmWorkflowStep,
   createStepIntervention,
@@ -20,6 +20,8 @@ import { PageSkeleton } from "../../components/PageSkeleton/PageSkeleton";
 import { SurfaceCard } from "../../components/SurfaceCard/SurfaceCard";
 import { RepositoryChanges } from "../../components/RepositoryChanges/RepositoryChanges";
 import { TestResultPanel } from "../../components/TestResultPanel/TestResultPanel";
+import stageContinueIcon from "../../assets/icons/stage-continue.svg";
+import stageReplayIcon from "../../assets/icons/stage-replay.svg";
 import { summarizeMetrics } from "../../features/observability/metricsSummary";
 import type { AgentMetric } from "../../features/observability/types";
 import type { RepositorySnapshot } from "../../features/repository/types";
@@ -39,7 +41,8 @@ import type {
 } from "../../features/workflow/types";
 import { getActiveStep } from "../../features/workflow/workflowSelectors";
 import { saveWorkspace } from "../../features/workspace/workspaceStorage";
-import { formatCurrency, formatDuration } from "../../lib/formatters";
+import { formatCurrency, formatDuration, formatTokenCount } from "../../lib/formatters";
+import { parseDecisionMemoryItems, type DecisionMemoryItem } from "../../lib/decisionMemory";
 import "./WorkbenchPage.css";
 
 function getStepOutput<T>(steps: Array<{ id: WorkflowStepId; output?: unknown }>, stepId: WorkflowStepId) {
@@ -59,13 +62,13 @@ function EmptyStepSummary({ step }: { step: StepRun }) {
   const statusMessage = (() => {
     switch (step.status) {
       case "running":
-        return `${step.agent} 正在生成结构化结果，请稍候。`;
+        return `${formatStepLabel(step.label)} 正在生成结构化结果，请稍候。`;
       case "failed":
-        return `${step.label} 执行失败，查看日志后可从时间轴重试。`;
+        return `${formatStepLabel(step.label)} 执行失败，查看日志后可从阶段条重试。`;
       case "waiting-human":
-        return `${step.label} 正在等待审核，请审阅 Agent 输出。`;
+        return `${formatStepLabel(step.label)} 正在等待确认，请审阅 AI 输出。`;
       default:
-        return `${step.label} 还没有产出结构化结果。确认并继续后，后端会运行对应智能体并把结构化结果传递给下游步骤。`;
+        return `${formatStepLabel(step.label)} 还没有产出结构化结果。确认并继续后，AI 会把结构化结果传递给下游阶段。`;
     }
   })();
 
@@ -77,7 +80,7 @@ function EmptyStepSummary({ step }: { step: StepRun }) {
       <SummaryCard title="当前状态">
         <div className="workbench__meta">
           <span>{formatRuntimeStatusValue(step.status)}</span>
-          <span>{step.agent}</span>
+          <span>{formatAgentName(step.agent)}</span>
         </div>
       </SummaryCard>
     </div>
@@ -109,7 +112,7 @@ function renderStepSummary(step: StepRun) {
           <SummaryCard title="交付范围">
             <div className="workbench__meta">
               <span>{requirement.pattern}</span>
-              <span>{requirement.targetRepo}</span>
+              <span>{formatAgentName(step.agent)}</span>
             </div>
           </SummaryCard>
         </div>
@@ -204,22 +207,56 @@ function renderStepSummary(step: StepRun) {
       if (!plan.strategy || !Array.isArray(plan.tasks)) {
         return <EmptyStepSummary step={step} />;
       }
+      const isVerificationTask = (task: CodeGenerationPlan["tasks"][number]) => {
+        const haystack = [task.title, ...task.files].join(" ").toLowerCase();
+        return /(^|[\\/_.-])(__tests__|tests?|spec|test)([\\/_.-]|$)/.test(haystack)
+          || /测试|验证|单测|用例|覆盖率|test|spec/.test(haystack);
+      };
+      const implementationTasks = plan.tasks.filter((task) => !isVerificationTask(task));
+      const explicitVerificationTasks = plan.tasks.filter(isVerificationTask);
+      const derivedVerificationTasks = implementationTasks.filter((task) => task.testRequired);
+      const verificationItems = [
+        ...explicitVerificationTasks.map((task) => ({
+          id: task.id,
+          title: task.title,
+          files: task.files,
+        })),
+        ...derivedVerificationTasks
+          .filter((task) => !explicitVerificationTasks.some((verificationTask) => verificationTask.id === task.id))
+          .map((task) => ({
+            id: `${task.id}-verification`,
+            title: `覆盖「${task.title}」的关键验收场景`,
+            files: task.files,
+          })),
+      ];
       return (
         <div className="step-summary">
           <SummaryCard title="生成策略">
             <p>{plan.strategy}</p>
           </SummaryCard>
-          <SummaryCard title="任务拆解">
+          <SummaryCard title="实现改动">
             <ul className="step-summary__list">
-              {plan.tasks.map((task) => (
+              {(implementationTasks.length ? implementationTasks : plan.tasks).map((task) => (
                 <li key={task.id}>
                   <strong>{task.title}</strong>
                   <small>{task.files.join(" · ")}</small>
-                  <small>{task.testRequired ? "需要测试" : "无需新增测试"}</small>
+                  {task.coverLayer ? <small>{task.coverLayer.toUpperCase()} 层</small> : null}
                 </li>
               ))}
             </ul>
           </SummaryCard>
+          {verificationItems.length ? (
+            <SummaryCard title="验证计划">
+              <ul className="step-summary__list">
+                {verificationItems.map((task) => (
+                  <li key={task.id}>
+                    <strong>{task.title}</strong>
+                    {task.files.length ? <small>{task.files.join(" · ")}</small> : null}
+                  </li>
+                ))}
+              </ul>
+            </SummaryCard>
+          ) : null}
         </div>
       );
     }
@@ -328,39 +365,39 @@ const runtimeStatusColors: Record<RuntimeStatus, string> = {
 
 const runtimeStateCopy: Record<RuntimeStatus, { eyebrow: string; title: string; description: string; cta: string }> = {
   waiting: {
-    eyebrow: "步骤就绪",
-    title: "当前步骤等待运行",
-    description: "结构化输出尚未稳定，运行智能体后会把结果传递到下游运行时。",
-    cta: "运行当前步骤",
+    eyebrow: "待开始",
+    title: "当前阶段等待处理",
+    description: "AI 会生成结构化产出，并把结果传递给后续阶段。",
+    cta: "运行当前阶段",
   },
   running: {
-    eyebrow: "智能体运行中",
-    title: "智能体正在生成当前步骤",
-    description: "运行事件流是此刻的主信号。结构化输出会在智能体完成后更新。",
-    cta: "正在运行",
+    eyebrow: "处理中",
+    title: "AI 正在处理",
+    description: "当前阶段正在生成结果。完成后会自动更新到当前工作区。",
+    cta: "AI 正在处理",
   },
   blocked: {
-    eyebrow: "待审核",
-    title: "当前步骤需要审核",
-    description: "请审阅智能体输出并补充修正意见，反馈将作为运行记忆影响后续生成。",
-    cta: "发送补充并重新生成",
+    eyebrow: "需要确认",
+    title: "需要你确认决策",
+    description: "请确认 AI 当前理解，或补充反馈后交给 AI 继续处理。",
+    cta: "确认并继续",
   },
   success: {
-    eyebrow: "步骤已完成",
-    title: "当前步骤已完成",
-    description: "后端已自动推进到下一步骤。查看结果或选择重放，无需手动启动下一步。",
-    cta: "从此步骤重放",
+    eyebrow: "已完成",
+    title: "当前阶段已完成",
+    description: "产出已保存，可继续查看下一阶段或从此处回放。",
+    cta: "查看下一步",
   },
   failed: {
-    eyebrow: "步骤失败",
-    title: "当前步骤执行失败",
-    description: "先查看失败原因，再选择重试当前步骤或通过介入缩小约束。",
-    cta: "重试步骤",
+    eyebrow: "失败",
+    title: "当前阶段失败",
+    description: "先查看失败原因，再选择重试或补充约束。",
+    cta: "重试当前阶段",
   },
   paused: {
     eyebrow: "运行已暂停",
-    title: "当前运行时已暂停",
-    description: "选择时间轴中的步骤继续运行、重放或查看历史输出。",
+    title: "当前交付已暂停",
+    description: "选择阶段继续运行、重放或查看历史输出。",
     cta: "恢复运行",
   },
 };
@@ -382,42 +419,56 @@ function formatRuntimeStatusValue(value?: string) {
 
 function formatAgentName(value: string) {
   const agentMap: Record<string, string> = {
-    "Requirement Composer": "需求编排器",
-    "Clarifier Agent": "澄清智能体",
-    "Planner Agent": "规划智能体",
-    "Context Locator": "上下文定位器",
-    "Codegen Skill": "代码生成技能",
-    "Conduit Writer": "Conduit 写入器",
-    Verifier: "验证器",
-    "PR Assistant": "PR 助手",
+    "Requirement Composer": "接收需求",
+    "Clarifier Agent": "确认需求",
+    "Planner Agent": "生成方案",
+    "Context Locator": "定位代码",
+    "Codegen Skill": "准备修改",
+    Verifier: "验证结果",
+    "PR Assistant": "准备 PR",
   };
+  if (/Writer$/i.test(value)) return "写入变更";
   return agentMap[value] ?? value;
+}
+
+function formatStepLabel(value: string) {
+  const labelMap: Record<string, string> = {
+    "PM 输入": "接收需求",
+    "澄清 Agent": "确认需求",
+    "方案 DSL": "生成方案",
+    "模块定位": "定位代码",
+    "代码计划": "准备修改",
+    "写入仓库": "写入变更",
+    "Lint / 单测": "验证结果",
+    "提交 PR": "准备 PR",
+  };
+  return labelMap[value] ?? value;
 }
 
 function formatRuntimeEventTitle(title: string) {
   const titleMap: Record<string, string> = {
-    "User intervention submitted": "用户已提交介入",
-    "Regenerating current step": "正在重新生成当前步骤",
+    "User intervention submitted": "用户已提交反馈",
+    "Regenerating current step": "AI 正在处理反馈",
     "Structured output updated": "结构化输出已更新",
     "Waiting for user confirmation": "待审核",
     "Waiting for intervention": "待审核",
-    "Runtime auto-continue enabled": "运行时已启用自动继续",
-    "User confirmed; Runtime auto-continue resumed": "用户已确认，运行时继续执行",
+    "Runtime auto-continue enabled": "已启用自动继续",
+    "User confirmed; Runtime auto-continue resumed": "用户已确认，AI 继续执行",
   };
   if (titleMap[title]) return titleMap[title];
   return Object.entries({
-    "Requirement Composer": "需求编排器",
-    "Clarifier Agent": "澄清智能体",
-    "Planner Agent": "规划智能体",
-    "Context Locator": "上下文定位器",
-    "Codegen Skill": "代码生成技能",
-    "Conduit Writer": "Conduit 写入器",
-    Verifier: "验证器",
-    "PR Assistant": "PR 助手",
-    Runtime: "运行时",
+    "Requirement Composer": "接收需求",
+    "Clarifier Agent": "确认需求",
+    "Planner Agent": "生成方案",
+    "Context Locator": "定位代码",
+    "Codegen Skill": "准备修改",
+    Verifier: "验证结果",
+    "PR Assistant": "准备 PR",
+    Runtime: "AI",
     Trigger: "触发器",
-    Step: "步骤",
+    Step: "阶段",
   }).reduce((nextTitle, [source, target]) => nextTitle.replaceAll(source, target), title)
+    .replace(/\b[A-Za-z]+\s+Writer\b/g, "写入变更")
     .replace(/ started$/, " 开始执行")
     .replace(/ finished$/, " 执行完成")
     .replace(/ waiting for user$/i, " 待审核")
@@ -454,28 +505,6 @@ function getQuestionTopic(question: ClarificationOutput["questions"][number], in
   return fallback || `待确认项 ${index + 1}`;
 }
 
-function extractRuntimeMemory(messages: InterventionMessage[]) {
-  return messages
-    .filter((message) => message.role === "user")
-    .flatMap((message) => {
-      const blocks = message.content.split(/\n\n+/).filter(Boolean);
-      return blocks.map((block, index) => {
-        const titleMatch = block.match(/问题\s*\d+[:：](.+)/);
-        const feedbackMatch = block.match(/我的反馈[:：]([\s\S]+)/);
-        const generalMatch = block.match(/整体补充[:：]([\s\S]+)/);
-        const title = titleMatch?.[1]?.trim() || (generalMatch ? "整体约束" : `确认约束 ${index + 1}`);
-        const rawContent = (feedbackMatch?.[1] ?? generalMatch?.[1] ?? block).trim();
-        return {
-          id: `${message.id}-${index}`,
-          title,
-          constraints: rawContent.split(/[；;。\n]/).map((item) => item.trim()).filter(Boolean),
-          source: "用户确认",
-          updatedAt: message.createdAt,
-        };
-      });
-    });
-}
-
 function getTimelineColor(status: RuntimeStatus) {
   if (status === "success") return "green";
   if (status === "failed") return "red";
@@ -487,12 +516,12 @@ function getTimelineColor(status: RuntimeStatus) {
 function buildExecutionEvents(steps: StepRun[], activeStep: StepRun | null, activeStatus: RuntimeStatus): RuntimeEvent[] {
   return steps.flatMap((step) => {
     const lifecycle = [
-      step.startedAt ? { id: `${step.id}-started`, time: step.startedAt, title: `${step.agent} started`, detail: step.label, live: false } : null,
+      step.startedAt ? { id: `${step.id}-started`, time: step.startedAt, title: `${step.agent} started`, detail: formatStepLabel(step.label), live: false } : null,
       ...step.logs.map((log, index) => ({
         id: `${step.id}-log-${index}`,
         time: step.finishedAt ?? step.startedAt ?? "",
         title: log,
-        detail: `${step.label} · 事件 ${index + 1}`,
+        detail: `${formatStepLabel(step.label)} · 事件 ${index + 1}`,
         live: false,
       })),
       step.finishedAt ? { id: `${step.id}-finished`, time: step.finishedAt, title: `${step.agent} finished`, detail: formatRuntimeStatusValue(step.status), live: false } : null,
@@ -501,8 +530,8 @@ function buildExecutionEvents(steps: StepRun[], activeStep: StepRun | null, acti
   }).concat(activeStep && ["running", "blocked"].includes(activeStatus) ? [{
     id: `${activeStep.id}-live-${activeStatus}`,
     time: new Date().toISOString(),
-    title: activeStatus === "blocked" ? "待审核" : `${activeStep.agent} ${runtimeStatusLabels[activeStatus]}`,
-    detail: activeStep.label,
+    title: activeStatus === "blocked" ? "待审核" : `${formatAgentName(activeStep.agent)} ${runtimeStatusLabels[activeStatus]}`,
+    detail: formatStepLabel(activeStep.label),
     live: true,
   }] : []).slice(-16);
 }
@@ -521,7 +550,7 @@ function RuntimeTimeline({
   onReplay: (stepId: WorkflowStepId) => void;
 }) {
   return (
-    <Card className="runtime-panel runtime-timeline" title="Workflow Runtime" bordered={false}>
+    <Card className="runtime-panel runtime-timeline" title="交付阶段" bordered={false}>
       <Timeline
         items={steps.map((step) => {
           const active = step.id === activeStepId;
@@ -543,19 +572,19 @@ function RuntimeTimeline({
                 tabIndex={0}
               >
                 <span className="runtime-step__title-row">
-                  <span className="runtime-step__title">{step.label}</span>
+                  <span className="runtime-step__title">{formatStepLabel(step.label)}</span>
                   <Button
-                    aria-label={`从 ${step.label} 重放`}
+                    aria-label={`从 ${formatStepLabel(step.label)} 重放`}
                     className="runtime-step__replay"
                     size="small"
-                    title={`从 ${step.label} 重放`}
+                    title={`从 ${formatStepLabel(step.label)} 重放`}
                     type="text"
                     onClick={(event) => { event.stopPropagation(); onReplay(step.id); }}
                   >
                     ↺
                   </Button>
                 </span>
-                <span className="runtime-step__agent">{step.agent}</span>
+                <span className="runtime-step__agent">{formatAgentName(step.agent)}</span>
                 <span className="runtime-step__footer">
                   <Tag color={runtimeStatusColors[status]} variant="outlined">{runtimeStatusLabels[status]}</Tag>
                   {(step.replayCount ?? 0) > 0 ? <Tag color="purple" variant="outlined">重跑 {step.replayCount} 次</Tag> : null}
@@ -566,6 +595,105 @@ function RuntimeTimeline({
         })}
       />
     </Card>
+  );
+}
+
+function StepProgress({
+  steps,
+  activeStepId,
+  activeStatus,
+  continueCueStepId,
+  onSelect,
+  onReplay,
+  onContinue,
+}: {
+  steps: StepRun[];
+  activeStepId: WorkflowStepId;
+  activeStatus: RuntimeStatus;
+  continueCueStepId?: WorkflowStepId | null;
+  onSelect: (stepId: WorkflowStepId) => void;
+  onReplay: (stepId: WorkflowStepId) => void;
+  onContinue: (stepId: WorkflowStepId) => void;
+}) {
+  const currentProgressIndex = (() => {
+    const firstOpen = steps.findIndex((step) => step.status !== "success");
+    return firstOpen === -1 ? steps.length - 1 : firstOpen;
+  })();
+  const percent = steps.length > 1 ? Math.round((currentProgressIndex / (steps.length - 1)) * 100) : 0;
+
+  return (
+    <section className="task-stepper" aria-label="交付阶段">
+      <div className="task-stepper__bar">
+        <span>交付阶段</span>
+        <Progress percent={percent} showInfo={false} size="small" />
+      </div>
+      <div className="task-stepper__items">
+        {steps.map((step, index) => {
+          const active = step.id === activeStepId;
+          const status = active ? activeStatus : mapRuntimeStatus(step);
+          const disabled = index > currentProgressIndex;
+          const current = index === currentProgressIndex;
+          const canShowActions = active;
+          const canContinue = !disabled && ["waiting", "blocked", "failed", "paused"].includes(status);
+          const shouldCueContinue = canContinue && continueCueStepId === step.id;
+          return (
+            <div
+              aria-disabled={disabled || undefined}
+              aria-label={`${formatStepLabel(step.label)}，${runtimeStatusLabels[status]}`}
+              className={`task-stepper__item task-stepper__item--${status} ${active ? "task-stepper__item--active" : ""} ${current ? "task-stepper__item--current" : ""} ${disabled ? "task-stepper__item--disabled" : ""}`}
+              key={step.id}
+              onKeyDown={(event) => {
+                if (disabled) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect(step.id);
+                }
+              }}
+              onClick={() => {
+                if (!disabled) onSelect(step.id);
+              }}
+              role="button"
+              tabIndex={disabled ? -1 : 0}
+            >
+              <span className="task-stepper__content">
+                <strong>{formatStepLabel(step.label)}</strong>
+              </span>
+              <span className="task-stepper__actions">
+                <Button
+                  aria-label={`从 ${formatStepLabel(step.label)} 重放`}
+                  className={`task-stepper__action task-stepper__replay ${canShowActions ? "task-stepper__action--available" : ""}`}
+                  size="small"
+                  title={`从 ${formatStepLabel(step.label)} 重放`}
+                  type="text"
+                  disabled={disabled}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!disabled) onReplay(step.id);
+                  }}
+                >
+                  <img className="task-stepper__action-icon" src={stageReplayIcon} alt="" aria-hidden="true" />
+                </Button>
+                {canContinue ? (
+                  <Button
+                    aria-label={`继续 ${formatStepLabel(step.label)}`}
+                    className={`task-stepper__action task-stepper__continue task-stepper__action--available ${shouldCueContinue ? "task-stepper__continue--cue" : ""}`}
+                    size="small"
+                    title={`继续 ${formatStepLabel(step.label)}`}
+                    type="text"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onContinue(step.id);
+                    }}
+                  >
+                    <img className="task-stepper__action-icon" src={stageContinueIcon} alt="" aria-hidden="true" />
+                  </Button>
+                ) : null}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -609,23 +737,23 @@ function StepChatThread({
     <section className={`runtime-chat runtime-chat--${density}`}>
       <header className="runtime-chat__header">
         <div>
-          <span>人工介入</span>
-          <h3>当前步骤运行记忆</h3>
+          <span>反馈</span>
+          <h3>当前阶段反馈</h3>
         </div>
-        {waitingForUser ? <Tag color="warning" variant="outlined">待审核</Tag> : <Tag variant="outlined">介入历史</Tag>}
+        {waitingForUser ? <Tag color="warning" variant="outlined">待审核</Tag> : <Tag variant="outlined">反馈历史</Tag>}
       </header>
       {waitingForUser ? (
         <div className="runtime-chat__waiting">
-          <strong>待审核</strong>
-          <span>当前步骤已暂停。你可以纠正智能体对当前步骤的理解，然后重新生成结构化输出。</span>
+          <strong>等待确认</strong>
+          <span>当前阶段已暂停。你可以补充约束或直接从阶段条继续。</span>
         </div>
       ) : null}
       <div className="runtime-chat__thread">
         {visibleMessages.length === 0 ? (
-          <p className="runtime-muted">当前步骤还没有介入历史。补充约束后，它会作为运行记忆影响当前步骤的重新生成。</p>
+          <p className="runtime-muted">当前阶段还没有反馈历史。补充约束后，它会作为运行记忆影响当前阶段的重新生成。</p>
         ) : threadMessages.map((message) => (
           <article className={`runtime-chat__message runtime-chat__message--${message.role}`} key={message.id}>
-            <strong>{message.role === "user" ? "用户" : message.role === "system" ? "运行时" : step.agent}</strong>
+            <strong>{message.role === "user" ? "用户" : message.role === "system" ? "系统" : formatAgentName(step.agent)}</strong>
             <p>{message.content}</p>
             <small>{new Date(message.createdAt).toLocaleTimeString()}</small>
           </article>
@@ -638,13 +766,12 @@ function StepChatThread({
             disabled={running}
             onKeyDown={handleKeyDown}
             onChange={(event) => onDraftChange(event.target.value)}
-            placeholder="继续补充当前步骤的约束，例如：不统计 Markdown 标记，只统计纯文本。"
+            placeholder="继续补充当前阶段的约束，例如：不统计 Markdown 标记，只统计纯文本。"
             value={draft}
           />
-          <Button htmlType="submit" loading={running} type="primary">发送补充并重新生成当前步骤</Button>
         </form>
       ) : (
-        <p className="runtime-chat__minimized-note">当前步骤已完成。介入历史作为运行记忆保留；需要继续修正时可从时间轴重放此步骤。</p>
+        <p className="runtime-chat__minimized-note">当前阶段已完成。反馈历史会作为运行记忆保留；需要继续修正时可从阶段条重放。</p>
       )}
     </section>
   );
@@ -655,11 +782,17 @@ function StepInterventionWorkspace({
   messages,
   running,
   onSubmitMessage,
+  onFeedbackChange,
+  onContinueCueChange,
+  submitRef,
 }: {
   step: StepRun;
   messages: InterventionMessage[];
   running: boolean;
   onSubmitMessage: (message: string) => void;
+  onFeedbackChange?: (hasPending: boolean) => void;
+  onContinueCueChange?: (ready: boolean) => void;
+  submitRef?: React.MutableRefObject<(() => void) | null>;
 }) {
   const [questionFeedback, setQuestionFeedback] = useState<Record<string, string>>({});
   const [generalFeedback, setGeneralFeedback] = useState("");
@@ -668,7 +801,11 @@ function StepInterventionWorkspace({
   const visibleMessages = messages.filter((message) => message.stepId === step.id && message.role !== "agent");
   const value = step.output ?? step.input;
   const clarification = step.id === "clarification" && isRecord(value) ? value as ClarificationOutput : null;
-  const questions = clarification?.questions ?? [];
+  const questions = useMemo(() => clarification?.questions ?? [], [clarification]);
+  const openQuestions = useMemo(
+    () => questions.filter((q) => (q as { status?: string }).status !== "resolved"),
+    [questions],
+  );
 
   useEffect(() => {
     setQuestionFeedback({});
@@ -676,8 +813,35 @@ function StepInterventionWorkspace({
     setExpandedSupplement({});
     setSelectedOptions({});
   }, [step.id]);
+  useEffect(() => { if (submitRef) submitRef.current = submitFeedback; }, [submitFeedback, submitRef]);
+  useEffect(() => {
+    const hasQ = Object.values(questionFeedback).some((v) => v.trim());
+    const hasSel = Object.values(selectedOptions).some((arr) => arr.length > 0);
+    const hasGen = generalFeedback.trim() !== "";
+    onFeedbackChange?.(hasQ || hasSel || hasGen);
+  }, [questionFeedback, selectedOptions, generalFeedback, onFeedbackChange]);
 
-  /** 判断 Agent 当前理解是否有有效内容 */
+  useEffect(() => {
+    if (!clarification) {
+      onContinueCueChange?.(true);
+      return;
+    }
+
+    const choiceQuestions = openQuestions.filter((question) => question.responseControl);
+    if (choiceQuestions.length === 0) {
+      onContinueCueChange?.(true);
+      return;
+    }
+
+    const allChoiceQuestionsHandled = choiceQuestions.every((question) => {
+      const selected = selectedOptions[question.id] ?? [];
+      const custom = questionFeedback[question.id]?.trim() ?? "";
+      return selected.length > 0 || custom.length > 0;
+    });
+    onContinueCueChange?.(allChoiceQuestionsHandled);
+  }, [clarification, onContinueCueChange, openQuestions, questionFeedback, selectedOptions]);
+
+  /** 判断 AI 当前理解是否有有效内容 */
   function isAnswerValid(answer: string | undefined): boolean {
     if (!answer || !answer.trim()) return false;
     const placeholderPatterns = [
@@ -725,7 +889,7 @@ function StepInterventionWorkspace({
         }
 
         if (custom) {
-          parts.push(`其他，请告诉 Agent 你的预期 ${custom}`);
+          parts.push(`其他，请告诉 AI 你的预期 ${custom}`);
         }
 
         return parts.join("\n");
@@ -746,21 +910,8 @@ function StepInterventionWorkspace({
 
   return (
     <section className="intervention-workspace">
-      <header className="intervention-workspace__header">
-        <div>
-          <span>人工介入工作区</span>
-          <h3>确认结构化澄清</h3>
-          <p>逐条展开需要确认的问题，补充你的修正意见；这些反馈会作为当前步骤的运行记忆一起发送。</p>
-        </div>
-        <Tag color="warning" variant="outlined">待审核</Tag>
-      </header>
-
       {clarification ? (() => {
-        // 只显示仍需用户处理的问题（兼容旧数据无 status 时按 open 处理）
-        const openQuestions = questions.filter(
-          (q) => (q as { status?: string }).status !== "resolved",
-        );
-        const hasDecisions = (clarification as { decisions?: unknown[] }).decisions?.length > 0;
+        const hasDecisions = ((clarification as { decisions?: unknown[] }).decisions?.length ?? 0) > 0;
         const isComplete =
           (clarification as { clarificationComplete?: boolean }).clarificationComplete === true ||
           (openQuestions.length === 0 && questions.length > 0 && hasDecisions);
@@ -769,7 +920,7 @@ function StepInterventionWorkspace({
         if (isComplete || (openQuestions.length === 0 && questionFeedback && Object.keys(questionFeedback).length === 0 && Object.keys(selectedOptions).length === 0)) {
           return (
             <section className="clarification-review">
-              <SurfaceCard title="智能体理解" tone="muted">
+              <SurfaceCard title="AI 当前理解" tone="muted">
                 {clarification.summary}
               </SurfaceCard>
               <SurfaceCard title="澄清已完成" tone="success">
@@ -788,7 +939,7 @@ function StepInterventionWorkspace({
 
         return (
         <section className="clarification-review">
-          <SurfaceCard title="智能体理解" tone="muted">
+          <SurfaceCard title="AI 当前理解" tone="muted">
             {clarification.summary}
           </SurfaceCard>
           <Collapse
@@ -807,7 +958,7 @@ function StepInterventionWorkspace({
                     {question.question}
                   </SurfaceCard>
                   {isAnswerValid(question.answer) ? (
-                    <SurfaceCard title="Agent 当前理解" tone="muted">
+                    <SurfaceCard title="AI 当前理解" tone="muted">
                       {question.answer!.trim()}
                     </SurfaceCard>
                   ) : null}
@@ -815,7 +966,7 @@ function StepInterventionWorkspace({
                     {question.riskIfUnanswered}
                   </SurfaceCard>
 
-                  {/* responseControl: Agent 输出的选择题 */}
+                  {/* responseControl: AI 输出的选择题 */}
                   {question.responseControl ? (() => {
                     const rc = question.responseControl;
                     const selected = selectedOptions[question.id] ?? [];
@@ -856,7 +1007,7 @@ function StepInterventionWorkspace({
                     return (
                       <SurfaceCard title={isSingle ? "请选择（单选）" : "请选择（多选）"} tone="accent">
                         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                          {/* Agent 给出的选项 */}
+                          {/* AI 给出的选项 */}
                           {rc.options.map((opt, i) => {
                             const isSelected = selected.includes(opt.id);
                             return (
@@ -881,7 +1032,7 @@ function StepInterventionWorkspace({
                               tone={customText ? "success" : "accent"}
                               selected={!!customText}
                             >
-                              <span style={{ fontWeight: 700 }}>{customPrefix}.</span> 其他，请告诉 Agent 你的预期
+                              <span style={{ fontWeight: 700 }}>{customPrefix}.</span> 其他，请告诉 AI 你的预期
                               <Input.TextArea
                                 autoFocus
                                 autoSize={{ minRows: 2, maxRows: 4 }}
@@ -900,7 +1051,7 @@ function StepInterventionWorkspace({
                               selected={!!customText}
                               onClick={toggleCustom}
                             >
-                              <span style={{ fontWeight: 700 }}>{customPrefix}.</span> 其他，请告诉 Agent 你的预期
+                              <span style={{ fontWeight: 700 }}>{customPrefix}.</span> 其他，请告诉 AI 你的预期
                               {customText && (
                                 <Typography.Text ellipsis style={{ color: "#344054", display: "block", marginTop: 4 }}>
                                   {customText}
@@ -953,12 +1104,11 @@ function StepInterventionWorkspace({
           autoSize={{ minRows: 2, maxRows: 5 }}
           disabled={running}
           onChange={(event) => setGeneralFeedback(event.target.value)}
-          placeholder="也可以在这里补充整体约束，系统会和上面的逐条反馈一起发送。"
+          placeholder="也可以在这里补充说明，系统会和上面的逐条反馈一起发送。"
           value={generalFeedback}
         />
         <div className="intervention-composer__footer">
-          <span>{questions.length ? `${questions.length} 条待确认问题` : "当前步骤可直接补充整体约束"}</span>
-          <Button type="primary" loading={running} onClick={submitFeedback}>发送全部反馈并重新生成</Button>
+          <span>{questions.length ? `${questions.length} 条待确认问题` : "当前阶段可直接补充说明"}</span>
         </div>
       </section>
 
@@ -970,26 +1120,45 @@ function StepInterventionWorkspace({
 }
 
 function RuntimeMemoryPanel({ messages }: { messages: InterventionMessage[] }) {
-  const memories = extractRuntimeMemory(messages);
+  const items = parseDecisionMemoryItems(messages);
+
+  const typeTags: Record<DecisionMemoryItem["type"], { label: string; color: string }> = {
+    "business-rule": { label: "业务规则", color: "blue" },
+    "display-rule": { label: "展示规则", color: "purple" },
+    "technical-constraint": { label: "技术约束", color: "cyan" },
+    risk: { label: "风险规避", color: "orange" },
+    preference: { label: "用户偏好", color: "green" },
+    other: { label: "其他", color: "default" },
+  };
+  const sourceLabel: Record<DecisionMemoryItem["source"], string> = {
+    "user-confirmed": "用户确认",
+    "user-feedback": "用户补充",
+    "option-selection": "选择题选项",
+  };
+
   return (
     <section className="runtime-memory-panel">
       <header>
-        <span>Decision Memory</span>
+        <span>已确认约束</span>
         <h3>已确认约束</h3>
       </header>
-      {memories.length ? memories.map((memory) => (
-        <article className="runtime-memory-item" key={memory.id}>
-          <h4>{memory.title}</h4>
-          <ul>
-            {memory.constraints.map((constraint) => <li key={constraint}>{constraint}</li>)}
-          </ul>
-          <footer>
-            <span>来源：{memory.source}</span>
-            <span>更新时间：{new Date(memory.updatedAt).toLocaleTimeString()}</span>
-          </footer>
-        </article>
+      {items.length ? items.map((item) => (
+        <SurfaceCard key={item.id} title={item.title} tone="muted">
+          <Space wrap size={4}>
+            <Tag color={typeTags[item.type].color}>{typeTags[item.type].label}</Tag>
+            {item.target && <Tag variant="outlined">{item.target}</Tag>}
+          </Space>
+          <div style={{ margin: "4px 0", color: "#344054", fontSize: 13, lineHeight: 1.5 }}>
+            {item.content}
+          </div>
+          <Space size={8} style={{ fontSize: 11, color: "#667085" }}>
+            <span>来源: {sourceLabel[item.source]}</span>
+            {item.sourceStepLabel && <span>阶段: {formatStepLabel(item.sourceStepLabel)}</span>}
+            <span>{new Date(item.updatedAt).toLocaleTimeString()}</span>
+          </Space>
+        </SurfaceCard>
       )) : (
-        <p className="runtime-muted">尚未确认约束。你的反馈会在这里沉淀为当前运行状态，而不是聊天记录。</p>
+        <p className="runtime-muted">尚未沉淀结构化约束。你的反馈会在这里沉淀为当前运行状态，而不是聊天记录。</p>
       )}
     </section>
   );
@@ -1012,9 +1181,38 @@ function InlineList({ items, empty }: { items: string[]; empty: string }) {
   );
 }
 
+type ChangedFileEntry = {
+  path: string;
+  changeType: string;
+  additions: number;
+  deletions: number;
+  contentPreview?: string;
+  source: "applied" | "pending" | "summary" | "derived";
+};
+
+function getRepoChangeEntries(repoResult?: RepoWriteResult): ChangedFileEntry[] {
+  const source = repoResult?.appliedChanges?.length
+    ? { files: repoResult.appliedChanges, source: "applied" as const }
+    : repoResult?.pendingChanges?.length
+      ? { files: repoResult.pendingChanges, source: "pending" as const }
+      : repoResult?.filesChanged?.length
+        ? { files: repoResult.filesChanged, source: "summary" as const }
+        : { files: [], source: "summary" as const };
+
+  return source.files.map((file) => ({
+    path: file.path,
+    changeType: file.changeType,
+    additions: file.additions,
+    deletions: file.deletions,
+    contentPreview: file.contentPreview,
+    source: source.source,
+  }));
+}
+
 function getChangedFiles(step: StepRun, repoResult?: RepoWriteResult) {
-  if (repoResult?.filesChanged?.length) {
-    return repoResult.filesChanged.map((file) => file.path);
+  const repoEntries = getRepoChangeEntries(repoResult);
+  if (repoEntries.length) {
+    return repoEntries.map((file) => file.path);
   }
 
   const value = step.output;
@@ -1027,14 +1225,10 @@ function getChangedFiles(step: StepRun, repoResult?: RepoWriteResult) {
   return [];
 }
 
-function getChangedFileEntries(step: StepRun, repoResult?: RepoWriteResult) {
-  if (repoResult?.filesChanged?.length) {
-    return repoResult.filesChanged.map((file) => ({
-      path: file.path,
-      changeType: file.changeType,
-      additions: file.additions,
-      deletions: file.deletions,
-    }));
+function getChangedFileEntries(step: StepRun, repoResult?: RepoWriteResult): ChangedFileEntry[] {
+  const repoEntries = getRepoChangeEntries(repoResult);
+  if (repoEntries.length) {
+    return repoEntries;
   }
 
   return getChangedFiles(step).map((path) => ({
@@ -1042,6 +1236,7 @@ function getChangedFileEntries(step: StepRun, repoResult?: RepoWriteResult) {
     changeType: "modified" as const,
     additions: 0,
     deletions: 0,
+    source: "derived" as const,
   }));
 }
 
@@ -1065,7 +1260,7 @@ function isPatchReviewStep(step: StepRun) {
   return ["repo_write", "verification", "pull_request"].includes(step.id);
 }
 
-function ChangedFileRow({ file }: { file: ReturnType<typeof getChangedFileEntries>[number] }) {
+function ChangedFileRow({ file }: { file: ChangedFileEntry }) {
   const { path } = file;
   const pathParts = splitFilePath(path);
   return (
@@ -1082,6 +1277,24 @@ function ChangedFileRow({ file }: { file: ReturnType<typeof getChangedFileEntrie
         </span>
       </li>
     </Tooltip>
+  );
+}
+
+function FileContentPreview({ content }: { content?: string }) {
+  if (!content?.trim()) {
+    return <p className="patch-file-preview__empty">当前结果没有提供内容预览；可在本地 git diff 中查看完整变更。</p>;
+  }
+
+  const lines = content.split(/\r?\n/);
+  return (
+    <div className="patch-file-preview" role="region" aria-label="文件内容预览">
+      {lines.map((line, index) => (
+        <div className="patch-file-preview__line" key={`${index}-${line}`}>
+          <span>{index + 1}</span>
+          <code>{line || " "}</code>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1110,6 +1323,17 @@ function PatchReviewWorkspace({
   const files = fileEntries.map((file) => file.path);
   const totalAdditions = fileEntries.reduce((sum, file) => sum + file.additions, 0);
   const totalDeletions = fileEntries.reduce((sum, file) => sum + file.deletions, 0);
+  const reviewMode = repoResult?.mode === "applied"
+    ? "已写入工作区"
+    : repoResult?.mode === "planned"
+      ? "等待手动落盘"
+      : "等待生成";
+  const headline = step.id === "repo_write"
+    ? "检查已写入的文件"
+    : step.id === "verification"
+      ? "检查验证结果"
+      : "检查交付产出";
+  const eyebrow = step.id === "repo_write" ? "写入变更" : "交付审阅";
   const checklist = step.id === "pull_request" && isRecord(step.output) && Array.isArray((step.output as PullRequestResult).checklist)
     ? (step.output as PullRequestResult).checklist
     : [
@@ -1123,22 +1347,33 @@ function PatchReviewWorkspace({
     : verification
       ? "质量门需要复核"
       : "等待质量门";
-  const hasQualityWarning = Boolean(verification && (verification.lint !== "passed" || verification.unitTests !== "passed" || verification.coverage <= 0));
+  const hasQualityWarning = Boolean(verification && (verification.lint !== "passed" || verification.unitTests !== "passed" || (verification.coverage ?? 0) <= 0));
   const checksRequiringReview = hasQualityWarning ? 1 : 0;
 
   return (
     <section className="patch-workspace">
       <header>
-        <span>AI 代码审查工作区</span>
-        <h3>补丁审查</h3>
+        <span>{eyebrow}</span>
+        <h3>{headline}</h3>
       </header>
 
       <section className="patch-section patch-section--overview">
         <div className="patch-section__title">
-          <span>主要信息</span>
-          <h4>补丁概览</h4>
+          <span>Git Review</span>
+          <h4>变更概览</h4>
         </div>
         <div className="patch-overview-flow">
+          <article className="patch-git-summary">
+            <div className="patch-git-summary__header">
+              <strong>{reviewMode}</strong>
+              <span>{repoResult?.branch ? `分支 ${repoResult.branch}` : "等待分支信息"}</span>
+            </div>
+            {repoResult?.diffSummary?.trim() ? (
+              <pre>{repoResult.diffSummary}</pre>
+            ) : (
+              <p>暂无 git status 摘要；下面展示 AI 已返回的文件变更内容。</p>
+            )}
+          </article>
           <article className="patch-overview__files">
             <div className="patch-overview__files-header">
               <strong>变更文件</strong>
@@ -1156,12 +1391,25 @@ function PatchReviewWorkspace({
                 label: files.length ? `${files.length} 个变更文件` : "暂无文件变更",
                 children: (
                   <ul className="changed-file-list">
-                    {fileEntries.length ? fileEntries.map((file) => <ChangedFileRow file={file} key={file.path} />) : <li className="patch-empty-row">当前步骤尚未产生文件变更。</li>}
+                    {fileEntries.length ? fileEntries.map((file) => <ChangedFileRow file={file} key={file.path} />) : <li className="patch-empty-row">当前阶段尚未产生文件变更。</li>}
                   </ul>
                 ),
               }]}
             />
           </article>
+          <Collapse
+            className="patch-disclosure patch-file-disclosure"
+            defaultActiveKey={fileEntries.length ? [fileEntries[0].path] : []}
+            items={fileEntries.length ? fileEntries.map((file) => ({
+              key: file.path,
+              label: `${formatChangeType(file.changeType)} ${file.path}`,
+              children: <FileContentPreview content={file.contentPreview} />,
+            })) : [{
+              key: "empty",
+              label: "文件内容预览",
+              children: <p className="patch-empty-row">等待写入阶段返回文件内容。</p>,
+            }]}
+          />
         </div>
       </section>
 
@@ -1215,69 +1463,25 @@ function PatchReviewWorkspace({
 function RuntimeStateBanner({
   step,
   status,
-  running,
-  onPrimaryAction,
-  onSecondaryAction,
-  hasPendingFeedback,
 }: {
   step: StepRun;
   status: RuntimeStatus;
-  running: boolean;
-  onPrimaryAction: () => void;
-  onSecondaryAction?: () => void;
-  hasPendingFeedback?: boolean;
 }) {
   const copy = runtimeStateCopy[status];
   const lastLog = step.logs.at(-1);
-
-  function renderActions() {
-    if (status === "running") {
-      return (
-        <Button disabled loading type="primary">{copy.cta}</Button>
-      );
-    }
-
-    if (status === "blocked") {
-      return (
-        <Space>
-          <Button type="primary" onClick={onPrimaryAction} loading={running}>
-            {hasPendingFeedback ? "发送反馈并重新生成" : "确认并继续"}
-          </Button>
-          {onSecondaryAction ? (
-            <Button onClick={onSecondaryAction}>
-              {hasPendingFeedback ? "不提交反馈，直接继续" : "重新生成"}
-            </Button>
-          ) : null}
-        </Space>
-      );
-    }
-
-    if (status === "success") {
-      return (
-        <Button type="primary" onClick={onPrimaryAction}>从此重放</Button>
-      );
-    }
-
-    if (status === "failed") {
-      return (
-        <Button danger type="primary" onClick={onPrimaryAction} loading={running}>重试当前步骤</Button>
-      );
-    }
-
-    // waiting / paused
-    return (
-      <Button type="primary" onClick={onPrimaryAction} loading={running}>{copy.cta}</Button>
-    );
-  }
+  const stageLabel = formatStepLabel(step.label);
+  const agentLabel = formatAgentName(step.agent);
+  const statusLine = stageLabel === agentLabel
+    ? `${stageLabel} · ${runtimeStatusLabels[status]}`
+    : `${stageLabel} · ${agentLabel} · ${runtimeStatusLabels[status]}`;
 
   return (
     <section className={`runtime-state-banner runtime-state-banner--${status}`}>
       <div>
-        <span>{copy.eyebrow}</span>
+        <span>{statusLine}</span>
         <h2>{copy.title}</h2>
         <p>{status === "failed" && lastLog ? `原因：${lastLog}` : copy.description}</p>
       </div>
-      {renderActions()}
     </section>
   );
 }
@@ -1295,7 +1499,32 @@ function OutputWorkspace({
   onRestore?: (snapshotId: string) => void;
   compact?: boolean;
 }) {
+  const [restoringId, setRestoringId] = useState<string | null>(null);
   const historyItems = (step.history ?? []).slice().reverse();
+
+  async function doRestore(snapshotId: string) {
+    if (!onRestore || restoringId) return;
+    Modal.confirm({
+      title: "还原到此版本？",
+      content: "还原后，当前阶段将恢复到该历史输出，该阶段之后的所有阶段会被回滚为待重新生成，后续阶段需要基于还原后的结果重新推进。",
+      okText: "确认还原",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setRestoringId(snapshotId);
+        try {
+          await onRestore(snapshotId);
+          message.success("已还原到历史版本，后续阶段已重置，请重新审核后继续推进");
+          onWorkspaceViewChange("summary");
+        } catch {
+          message.error("还原历史版本失败");
+        } finally {
+          setRestoringId(null);
+        }
+      },
+    });
+  }
+
   const tabs = [
     { key: "summary", label: "结构化结果", children: renderStepSummary(step) },
     ...(historyItems.length > 0 ? [{
@@ -1309,10 +1538,14 @@ function OutputWorkspace({
                 <Tag color={snapshot.reason === "replay" ? "purple" : "blue"} variant="outlined">{snapshot.reason === "replay" ? "重放" : "重新生成"}</Tag>
                 <small>{new Date(snapshot.createdAt).toLocaleString()}</small>
                 {onRestore ? (
-                  <Button size="small" onClick={() => onRestore(snapshot.id)}>还原此版本</Button>
+                  <Button size="small" loading={restoringId === snapshot.id} onClick={() => doRestore(snapshot.id)}>还原此版本</Button>
                 ) : null}
               </div>
-              <p className="step-history-item__summary">已保存一份结构化结果快照，可按需还原到此版本。</p>
+              <p className="step-history-item__summary">
+                {onRestore
+                  ? "已保存一份结构化结果快照，点击「还原此版本」可将当前阶段恢复到此版本并重置后续阶段。"
+                  : "已保存一份结构化结果快照，可用于对比历史输出。"}
+              </p>
             </div>
           ))}
         </div>
@@ -1346,6 +1579,9 @@ function StateDrivenWorkspace({
   onPrimaryAction,
   onSecondaryAction,
   onRestore,
+  onFeedbackChange,
+  onContinueCueChange,
+  submitRef,
   onWorkspaceViewChange,
   hasPendingFeedback,
 }: {
@@ -1361,10 +1597,13 @@ function StateDrivenWorkspace({
   onDraftChange: (value: string) => void;
   onInterventionSubmit: (event: FormEvent) => void;
   onInterventionMessage: (message: string) => void;
-  onPrimaryAction: () => void;
+  onPrimaryAction?: () => void;
   onSecondaryAction?: () => void;
   onRestore?: (snapshotId: string) => void;
   onWorkspaceViewChange: (value: "summary" | "history") => void;
+  onFeedbackChange?: (hasPending: boolean) => void;
+  onContinueCueChange?: (ready: boolean) => void;
+  submitRef?: React.MutableRefObject<(() => void) | null>;
 }) {
   const chat = (
     <StepChatThread
@@ -1386,14 +1625,35 @@ function StateDrivenWorkspace({
   );
 
   if (status === "blocked") {
+    if (step.id === "repo_write") {
+      return (
+        <div className="runtime-state-layout runtime-state-layout--blocked runtime-state-layout--patch-review">
+          <RuntimeStateBanner status={status} step={step} />
+          <PatchReviewWorkspace repoResult={repoResult} step={step} verification={verification} />
+          <StepChatThread
+            density="primary"
+            draft={draft}
+            messages={messages}
+            onDraftChange={onDraftChange}
+            onSubmit={onInterventionSubmit}
+            running={running}
+            step={step}
+          />
+        </div>
+      );
+    }
+
     return (
       <div className="runtime-state-layout runtime-state-layout--blocked">
-        <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner status={status} step={step} />
         <StepInterventionWorkspace
           messages={messages}
           onSubmitMessage={onInterventionMessage}
           running={running}
           step={step}
+          onFeedbackChange={onFeedbackChange}
+          onContinueCueChange={onContinueCueChange}
+          submitRef={submitRef}
         />
       </div>
     );
@@ -1402,12 +1662,12 @@ function StateDrivenWorkspace({
   if (status === "running") {
     return (
       <div className="runtime-state-layout runtime-state-layout--running">
-        <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner status={status} step={step} />
         <section className="running-workspace">
           <div className="running-workspace__pulse">
             <span className="runtime-presence-dot runtime-presence-dot--running" />
-            <strong>{step.agent}</strong>
-            <p>正在处理「{step.label}」。详细运行事件已移到右侧观察区，这里只保留当前工作状态。</p>
+            <strong>{formatAgentName(step.agent)}</strong>
+            <p>正在处理「{formatStepLabel(step.label)}」。完成后会自动更新当前工作区。</p>
           </div>
         </section>
         <OutputWorkspace
@@ -1423,14 +1683,14 @@ function StateDrivenWorkspace({
   if (status === "failed") {
     return (
       <div className="runtime-state-layout runtime-state-layout--failed">
-        <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner status={status} step={step} />
         <div className="runtime-priority-grid runtime-priority-grid--error">
           <section className="failure-workspace">
-            <h3>{step.agent} 执行失败</h3>
-            <p>{step.logs.at(-1) ?? "当前步骤执行失败，尚未提供详细错误。"}</p>
+            <h3>{formatStepLabel(step.label)} 执行失败</h3>
+            <p>{step.logs.at(-1) ?? "当前阶段执行失败，尚未提供详细错误。"}</p>
             <Space wrap>
-              <Button danger onClick={onPrimaryAction} loading={running} type="primary">重试步骤</Button>
-              <Button onClick={() => onDraftChange("请缩小当前步骤的约束，并基于已有输出重试。")}>编辑约束</Button>
+              <Button danger onClick={onPrimaryAction} loading={running} type="primary">重试当前阶段</Button>
+              <Button onClick={() => onDraftChange("请缩小当前阶段的约束，并基于已有输出重试。")}>编辑约束</Button>
             </Space>
           </section>
           <StepChatThread
@@ -1471,7 +1731,7 @@ function StateDrivenWorkspace({
         className="completed-intervention"
         items={[{
           key: "intervention",
-          label: `介入历史 · ${interventionCount} 条消息`,
+          label: `反馈历史 · ${interventionCount} 条消息`,
           children: (
             <StepChatThread
               composerEnabled={false}
@@ -1491,7 +1751,7 @@ function StateDrivenWorkspace({
     if (isPatchReviewStep(step)) {
       return (
         <div className="runtime-state-layout runtime-state-layout--success runtime-state-layout--patch-review">
-          <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+          <RuntimeStateBanner status={status} step={step} />
           <PatchReviewWorkspace repoResult={repoResult} step={step} verification={verification} />
           {rawOutputDisclosure}
           {interventionDisclosure}
@@ -1501,9 +1761,8 @@ function StateDrivenWorkspace({
 
     return (
       <div className="runtime-state-layout runtime-state-layout--success">
-        <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+        <RuntimeStateBanner status={status} step={step} />
         {output}
-        <PatchReviewWorkspace repoResult={repoResult} step={step} verification={verification} />
         {interventionDisclosure}
       </div>
     );
@@ -1511,7 +1770,7 @@ function StateDrivenWorkspace({
 
   return (
     <div className="runtime-state-layout runtime-state-layout--waiting">
-      <RuntimeStateBanner hasPendingFeedback={hasPendingFeedback} onPrimaryAction={onPrimaryAction} onSecondaryAction={onSecondaryAction} running={running} status={status} step={step} />
+      <RuntimeStateBanner status={status} step={step} />
       {output}
       {chat}
     </div>
@@ -1585,7 +1844,7 @@ function DynamicSidePanel({
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
         <SkillBadge run={run} step={activeStep} />
-        <ContextSection title="PM 输入 / 澄清">
+        <ContextSection title="需求与确认">
           <Typography.Paragraph>{requirement.rawText}</Typography.Paragraph>
         </ContextSection>
         <ContextSection title="仓库">
@@ -1597,8 +1856,8 @@ function DynamicSidePanel({
         <ContextSection title="范围标签">
           <Space wrap>
             <Tag color="blue" variant="outlined">{requirement.pattern}</Tag>
-            <Tag variant="outlined">{requirement.targetRepo}</Tag>
-            <Tag variant="outlined">{activeStep.agent}</Tag>
+            <Tag variant="outlined">{repository.name}</Tag>
+            <Tag variant="outlined">{formatAgentName(activeStep.agent)}</Tag>
           </Space>
         </ContextSection>
       </Card>
@@ -1619,7 +1878,7 @@ function DynamicSidePanel({
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
         <SkillBadge run={run} step={activeStep} />
         <ContextSection title="上下文定位">
-          <InlineList items={files} empty="等待智能体定位文件后展示代码上下文。" />
+          <InlineList items={files} empty="等待 AI 定位文件后展示代码上下文。" />
         </ContextSection>
         <ContextSection title="候选模块">
           <InlineList items={modules} empty="候选模块会在上下文定位完成后出现。" />
@@ -1641,7 +1900,7 @@ function DynamicSidePanel({
         <ContextSection title="补丁摘要">
           <InlineList
             items={(repoResult?.filesChanged ?? []).map((file) => `${formatChangeType(file.changeType)}：${file.path}（+${file.additions} / -${file.deletions}）`)}
-            empty="等待写入仓库后展示补丁摘要。"
+            empty="等待写入变更后展示补丁摘要。"
           />
         </ContextSection>
       </Card>
@@ -1702,16 +1961,16 @@ function DynamicSidePanel({
     <Card className="runtime-panel runtime-telemetry-panel" title="执行遥测" bordered={false}>
       <SkillBadge run={run} step={activeStep} />
       <div className="runtime-telemetry-grid">
-        <Statistic title="智能体调用" value={metrics.calls} />
-        <Statistic title="上下文 Token" value={metrics.inputTokens + metrics.outputTokens} />
-        <Statistic title="运行时长" value={formatDuration(metrics.latencyMs)} />
+        <Statistic title="AI 调用" value={metrics.calls} />
+        <Statistic title="上下文 Token" value={formatTokenCount(metrics.inputTokens + metrics.outputTokens)} />
+        <Statistic title="耗时" value={formatDuration(metrics.latencyMs)} />
         <Statistic title="成本" value={formatCurrency(metrics.estimatedCost)} />
       </div>
       <div className="runtime-agent-list">
         {agentMetrics.map((metric) => (
           <article className="runtime-agent-row" key={metric.agent}>
             <strong>{metric.agent}</strong>
-            <span>{metric.inputTokens + metric.outputTokens} Token · {formatDuration(metric.latencyMs)} · {metric.calls} 次调用</span>
+            <span>{formatTokenCount(metric.inputTokens + metric.outputTokens)} Token · {formatDuration(metric.latencyMs)} · {metric.calls} 次调用</span>
           </article>
         ))}
       </div>
@@ -1727,8 +1986,8 @@ function ExecutionFeed({ events }: { events: RuntimeEvent[] }) {
   }, [events.length]);
 
   return (
-    <Card className="runtime-panel execution-feed" title="运行事件流" bordered={false}>
-      {events.length === 0 ? <p className="runtime-muted">等待智能体运行事件。后续可接入 SSE 或任务事件流。</p> : null}
+    <Card className="runtime-panel execution-feed" title="运行日志" bordered={false}>
+      {events.length === 0 ? <p className="runtime-muted">等待 AI 运行日志。后续可接入 SSE 或任务事件流。</p> : null}
       <ul ref={feedRef}>
         {events.map((event, index) => (
           <li className={index === events.length - 1 || event.live ? "execution-feed__event--current" : ""} key={event.id}>
@@ -1754,9 +2013,32 @@ export function WorkbenchPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [workspaceView, setWorkspaceView] = useState<"summary" | "history">("summary");
   const [chatDraft, setChatDraft] = useState("");
+  const [hasQuestionFeedback, setHasQuestionFeedback] = useState(false);
+  const [continueCueReady, setContinueCueReady] = useState(false);
+  const structuredSubmitRef = useRef<(() => void) | null>(null);
+
+  /** 统一提交所有待提交反馈（聊天框 + 结构化） */
+  async function submitPendingFeedback() {
+    const chat = chatDraft.trim();
+    // 先触发结构化提交（通过 ref 调用 StepInterventionWorkspace 的 submitFeedback），
+    // submitFeedback 内部调用 onSubmitMessage 即 submitInterventionMessage
+    structuredSubmitRef.current?.();
+    // 如果聊天框也有内容，单独提交一份聊天框消息
+    if (chat) {
+      await submitInterventionMessage(chat);
+      setChatDraft("");
+    }
+  }
+
+  /** 检查是否存在于聊天框/深层反馈表单中未提交的反馈草稿 */
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEvent[]>([]);
   const activeStep = run ? getActiveStep(run) : null;
   const activeRuntimeStatus: RuntimeStatus = activeStep ? mapRuntimeStatus(activeStep) : "waiting";
+  const hasPendingFeedback = activeRuntimeStatus === "blocked" && (chatDraft.trim() !== "" || hasQuestionFeedback);
+  const shouldCueContinue =
+    Boolean(activeStep) &&
+    ["blocked", "waiting", "paused"].includes(activeRuntimeStatus) &&
+    (activeRuntimeStatus === "blocked" && activeStep?.id === "clarification" ? continueCueReady : true);
   const metrics = summarizeMetrics(agentMetrics);
   const repoResult = run ? getStepOutput<RepoWriteResult>(run.steps, "repo_write") : undefined;
   const verification = run ? getStepOutput<VerificationResult>(run.steps, "verification") : undefined;
@@ -1824,7 +2106,6 @@ export function WorkbenchPage() {
           setRun(null);
           setAgentMetrics([]);
           setRepository(null);
-          setApiStatus("error");
           setErrorMessage(error instanceof Error ? error.message : "后端 API 不可达，请确认后端服务已启动。");
         }
       }
@@ -1865,7 +2146,7 @@ export function WorkbenchPage() {
 
     // 拆分 confirm vs run 两种语义：
     // - waiting-human：用户审阅通过，调用 /confirm；
-    // - 其他状态（idle / failed / success）：调用 /run 重新生成当前步骤。
+    // - 其他状态（idle / failed / success）：调用 /run 重新生成当前阶段。
     const action = activeStep.status === "waiting-human" ? "confirm" : "run";
 
     try {
@@ -1876,8 +2157,7 @@ export function WorkbenchPage() {
       setAgentMetrics(await getAgentMetrics());
       setErrorMessage("");
     } catch (error) {
-      setApiStatus("error");
-      setErrorMessage(error instanceof Error ? error.message : "运行步骤失败，请确认后端服务可达。");
+      setErrorMessage(error instanceof Error ? error.message : "运行阶段失败，请确认后端服务可达。");
     }
   }
 
@@ -1888,8 +2168,39 @@ export function WorkbenchPage() {
       setRun(await replayWorkflowFrom(run.id, stepId));
       setErrorMessage("");
     } catch (error) {
-      setApiStatus("error");
       setErrorMessage(error instanceof Error ? error.message : "重放流程失败，请确认后端服务可达。");
+    }
+  }
+
+  async function handleStepContinue(stepId: WorkflowStepId) {
+    if (!run || !activeStep) return;
+    const step = run.steps.find((item) => item.id === stepId);
+    if (!step) return;
+    const stepStatus = step.id === activeStep.id ? activeRuntimeStatus : mapRuntimeStatus(step);
+
+    if (stepStatus === "success") {
+      const index = run.steps.findIndex((item) => item.id === stepId);
+      const next = run.steps[index + 1];
+      if (next && next.status !== "success") {
+        setRun((currentRun) => currentRun ? ({ ...currentRun, activeStepId: next.id }) : currentRun);
+      }
+      return;
+    }
+
+    if (step.id === activeStep.id && hasPendingFeedback) {
+      await submitPendingFeedback();
+      return;
+    }
+
+    try {
+      const nextRun = step.status === "waiting-human"
+        ? await confirmWorkflowStep(run.id, step.id)
+        : await runWorkflowStep(run.id, step.id);
+      setRun(nextRun);
+      setAgentMetrics(await getAgentMetrics());
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "运行阶段失败，请确认后端服务可达。");
     }
   }
 
@@ -1901,8 +2212,8 @@ export function WorkbenchPage() {
       setRun(nextRun);
       setErrorMessage("");
     } catch (error) {
-      setApiStatus("error");
       setErrorMessage(error instanceof Error ? error.message : "还原历史版本失败。");
+      throw error;
     }
   }
 
@@ -1929,7 +2240,7 @@ export function WorkbenchPage() {
           : step,
       ),
     });
-    appendRuntimeEvents(activeStep, ["用户已提交介入", "正在重新生成当前步骤", `${activeStep.agent} started`]);
+    appendRuntimeEvents(activeStep, ["用户已提交反馈", "AI 正在处理反馈", `${activeStep.agent} started`]);
 
     try {
       const nextRun = await createStepIntervention(run.id, activeStep.id, nextMessage);
@@ -1939,7 +2250,7 @@ export function WorkbenchPage() {
     } catch (error) {
       // 回滚 optimistic update
       setRun(previousRun);
-      setErrorMessage(error instanceof Error ? error.message : "智能体重新生成失败，请确认后端服务可达。");
+      setErrorMessage(error instanceof Error ? error.message : "AI 重新生成失败，请确认后端服务可达。");
     }
   }
 
@@ -1980,50 +2291,40 @@ export function WorkbenchPage() {
       />
       <section className="runtime-run-header">
         <div>
-          <span className="workbench__eyebrow">运行会话</span>
-          <h1>工作流：{run.title || requirement.title}</h1>
+          <span className="workbench__eyebrow">交付任务</span>
+          <h1>{run.title || requirement.title}</h1>
           <p>{requirement.rawText}</p>
-          <div className="workbench__meta">
-            <span>{requirement.pattern}</span>
-            <span>{requirement.targetRepo}</span>
-            <span>{runtimeStatusLabels[activeRuntimeStatus]}</span>
+          <div className="workbench__meta runtime-chip-row">
+            {projectBreadcrumb?.name ? <span className="runtime-chip">{projectBreadcrumb.name}</span> : null}
+            <span className="runtime-chip">{requirement.pattern}</span>
+            <span className="runtime-chip">{repository.name}</span>
+            <span className="runtime-chip">{runtimeStatusLabels[activeRuntimeStatus]}</span>
           </div>
         </div>
-        <div className="runtime-telemetry-strip" id="observability">
-          <span><strong>{metrics.calls}</strong> 次调用</span>
-          <span><strong>{metrics.inputTokens + metrics.outputTokens}</strong> Token</span>
-          <span><strong>{formatDuration(metrics.latencyMs)}</strong></span>
+        <div className="runtime-telemetry-strip runtime-chip-row" id="observability">
+          <span className="runtime-chip"><strong>{metrics.calls}</strong> 次调用</span>
+          <span className="runtime-chip"><strong>{formatTokenCount(metrics.inputTokens + metrics.outputTokens)}</strong> Token</span>
+          <span className="runtime-chip"><strong>{formatDuration(metrics.latencyMs)}</strong></span>
         </div>
       </section>
 
       {errorMessage ? <Alert type="error" message={errorMessage} showIcon /> : null}
 
-      <section className={`runtime-layout runtime-layout--${activeRuntimeStatus}`} id="workflow">
-        <aside className="runtime-left">
-          <RuntimeTimeline
-            activeStatus={activeRuntimeStatus}
-            activeStepId={run.activeStepId}
-            onReplay={handleReplay}
-            onSelect={(stepId) => setRun((currentRun) => currentRun ? ({ ...currentRun, activeStepId: stepId }) : currentRun)}
-            steps={run.steps}
-          />
-        </aside>
+      <section className="runtime-progress-shell">
+        <StepProgress
+          activeStatus={activeRuntimeStatus}
+          activeStepId={run.activeStepId}
+          continueCueStepId={shouldCueContinue ? run.activeStepId : null}
+          onContinue={handleStepContinue}
+          onReplay={handleReplay}
+          onSelect={(stepId) => setRun((currentRun) => currentRun ? ({ ...currentRun, activeStepId: stepId }) : currentRun)}
+          steps={run.steps}
+        />
+      </section>
 
+      <section className={`runtime-layout runtime-layout--focused runtime-layout--${activeRuntimeStatus}`} id="workflow">
         <section className="runtime-center" id="contract">
           <Card className={`runtime-panel runtime-step-workspace runtime-state--${activeRuntimeStatus}`} bordered={false}>
-            <header className="runtime-step-workspace__header">
-              <div>
-                <span className="workbench__section-label">WORKSPACE</span>
-                <h2>{activeStep.label}</h2>
-                <p className="runtime-status-line">
-                  <span className={`runtime-presence-dot runtime-presence-dot--${activeRuntimeStatus}`} />
-                  {activeStep.agent} · {runtimeStatusLabels[activeRuntimeStatus]}
-                </p>
-              </div>
-              <Space>
-                <Tag color={runtimeStatusColors[activeRuntimeStatus]} variant="outlined">{runtimeStateCopy[activeRuntimeStatus].eyebrow}</Tag>
-              </Space>
-            </header>
             <StateDrivenWorkspace
               draft={chatDraft}
               messages={activeStep.interventions ?? []}
@@ -2032,14 +2333,17 @@ export function WorkbenchPage() {
               onInterventionSubmit={handleInterventionSubmit}
               onPrimaryAction={
                 activeRuntimeStatus === "success" ? () => handleReplay(activeStep.id)
-                : activeRuntimeStatus === "blocked" && chatDraft.trim()
-                  ? () => submitInterventionMessage(chatDraft)
+                : hasPendingFeedback
+                  ? submitPendingFeedback
                   : completeCurrentStep
               }
               onRestore={handleRestore}
-              hasPendingFeedback={activeRuntimeStatus === "blocked" && chatDraft.trim() !== ""}
+              hasPendingFeedback={hasPendingFeedback}
+              submitRef={structuredSubmitRef}
+              onFeedbackChange={setHasQuestionFeedback}
+              onContinueCueChange={setContinueCueReady}
               onSecondaryAction={
-                activeRuntimeStatus === "blocked" && chatDraft.trim()
+                hasPendingFeedback && chatDraft.trim()
                   ? completeCurrentStep
                   : activeRuntimeStatus === "blocked"
                     ? () => runWorkflowStep(run.id, activeStep.id).then(setRun).catch(() => undefined)
@@ -2055,22 +2359,6 @@ export function WorkbenchPage() {
             />
           </Card>
         </section>
-
-        <aside className="runtime-right">
-          <div className="runtime-feed-sticky">
-            <ExecutionFeed events={executionEvents} />
-          </div>
-          <DynamicSidePanel
-            activeStep={activeStep}
-            run={run}
-            agentMetrics={agentMetrics}
-            metrics={metrics}
-            repoResult={repoResult}
-            repository={repository}
-            requirement={requirement}
-            verification={verification}
-          />
-        </aside>
       </section>
     </main>
   );

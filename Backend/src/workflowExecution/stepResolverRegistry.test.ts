@@ -27,7 +27,7 @@ function makeRun() {
       {
         id: "clarification" as const,
         label: "Clarifier",
-        agent: "Clarifier Agent",
+        agent: "确认需求",
         status: "idle" as const,
         input: undefined as unknown,
         output: undefined,

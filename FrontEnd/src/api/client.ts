@@ -30,7 +30,7 @@ export function getWorkflowRun(runId: string) {
   return request<WorkflowRun>(`/workflows/${runId}`);
 }
 
-export function createWorkflowRun(requirement: RequirementDraft) {
+export function createWorkflowRun(requirement: RequirementDraft & { projectId?: string; workspaceId?: string }) {
   return request<WorkflowRun>("/workflows", {
     method: "POST",
     body: JSON.stringify(requirement),

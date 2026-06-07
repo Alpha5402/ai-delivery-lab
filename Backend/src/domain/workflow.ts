@@ -65,25 +65,25 @@ export const verificationStatuses = [
 export const stepOrder = [...workflowStepIds];
 
 export const stepLabels: Record<WorkflowStepId, string> = {
-  requirement_intake: "PM 输入",
-  clarification: "澄清 Agent",
-  solution_design: "方案 DSL",
-  module_mapping: "模块定位",
-  code_generation: "代码计划",
-  repo_write: "写入仓库",
-  verification: "Lint / 单测",
-  pull_request: "提交 PR",
+  requirement_intake: "接收需求",
+  clarification: "确认需求",
+  solution_design: "生成方案",
+  module_mapping: "定位代码",
+  code_generation: "准备修改",
+  repo_write: "写入变更",
+  verification: "验证结果",
+  pull_request: "准备 PR",
 };
 
 export const stepAgents: Record<WorkflowStepId, string> = {
-  requirement_intake: "Requirement Composer",
-  clarification: "Clarifier Agent",
-  solution_design: "Planner Agent",
-  module_mapping: "Context Locator",
-  code_generation: "Codegen Skill",
-  repo_write: "Conduit Writer",
-  verification: "Verifier",
-  pull_request: "PR Assistant",
+  requirement_intake: "接收需求",
+  clarification: "确认需求",
+  solution_design: "生成方案",
+  module_mapping: "定位代码",
+  code_generation: "准备修改",
+  repo_write: "写入变更",
+  verification: "验证结果",
+  pull_request: "准备 PR",
 };
 
 // 旧的 stepExecutionModes 常量已迁移至 services/workflowSettingsService.ts 的 defaultStepExecutionModes，

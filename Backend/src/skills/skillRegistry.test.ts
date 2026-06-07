@@ -24,8 +24,8 @@ function makeRun(overrides: {
     steps: [
       {
         id: "requirement_intake",
-        label: "PM 输入",
-        agent: "Requirement Composer",
+        label: "接收需求",
+        agent: "接收需求",
         status: "success",
         input: { source: "pm" },
         output: {
@@ -43,8 +43,8 @@ function makeRun(overrides: {
         ? [
             {
               id: "solution_design" as const,
-              label: "方案 DSL",
-              agent: "Planner Agent",
+              label: "生成方案",
+              agent: "生成方案",
               status: "success" as const,
               input: undefined as unknown,
               output: {

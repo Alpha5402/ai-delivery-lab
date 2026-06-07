@@ -7,11 +7,11 @@ describe("calculateReadingStats", () => {
   });
 
   it("counts English words", () => {
-    expect(calculateReadingStats("Hello world from Conduit")).toEqual({ wordCount: 4, readingMinutes: 1 });
+    expect(calculateReadingStats("Hello world from Workspace")).toEqual({ wordCount: 4, readingMinutes: 1 });
   });
 
   it("counts mixed Chinese and English content", () => {
-    expect(calculateReadingStats("Conduit 文章 supports tags")).toEqual({ wordCount: 5, readingMinutes: 1 });
+    expect(calculateReadingStats("Workspace 文章 supports tags")).toEqual({ wordCount: 5, readingMinutes: 1 });
   });
 
   it("uses at least one minute for empty body", () => {

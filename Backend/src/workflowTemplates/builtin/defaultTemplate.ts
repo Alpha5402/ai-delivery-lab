@@ -25,31 +25,31 @@ const DEFAULT_MODES: Record<WorkflowStepId, StepExecutionMode> = {
   solution_design: "manual-confirmation",
   module_mapping: "automatic",
   code_generation: "manual-confirmation",
-  repo_write: "automatic",
+  repo_write: "manual-confirmation",
   verification: "automatic",
   pull_request: "manual-confirmation",
 };
 
 const STEP_LABELS: Record<WorkflowStepId, string> = {
-  requirement_intake: "PM 输入",
-  clarification: "澄清 Agent",
-  solution_design: "方案 DSL",
-  module_mapping: "模块定位",
-  code_generation: "代码计划",
-  repo_write: "写入仓库",
-  verification: "Lint / 单测",
-  pull_request: "提交 PR",
+  requirement_intake: "接收需求",
+  clarification: "确认需求",
+  solution_design: "生成方案",
+  module_mapping: "定位代码",
+  code_generation: "准备修改",
+  repo_write: "写入变更",
+  verification: "验证结果",
+  pull_request: "准备 PR",
 };
 
 const STEP_AGENTS: Record<WorkflowStepId, string> = {
-  requirement_intake: "Requirement Composer",
-  clarification: "Clarifier Agent",
-  solution_design: "Planner Agent",
-  module_mapping: "Context Locator",
-  code_generation: "Codegen Skill",
-  repo_write: "Conduit Writer",
-  verification: "Verifier",
-  pull_request: "PR Assistant",
+  requirement_intake: "接收需求",
+  clarification: "确认需求",
+  solution_design: "生成方案",
+  module_mapping: "定位代码",
+  code_generation: "准备修改",
+  repo_write: "写入变更",
+  verification: "验证结果",
+  pull_request: "准备 PR",
 };
 
 const AGENT_PROFILE_IDS: Record<WorkflowStepId, string> = {
@@ -79,7 +79,7 @@ export const DEFAULT_TEMPLATE_ID = "default-software-delivery";
 export const defaultWorkflowTemplate: WorkflowTemplate = {
   id: DEFAULT_TEMPLATE_ID,
   name: "默认软件交付流程",
-  description: "标准 8 步软件交付：PM 输入 → 澄清 → 方案设计 → 模块定位 → 代码计划 → 仓库写入 → 验证 → PR",
+  description: "标准 8 步软件交付：接收需求 → 确认需求 → 生成方案 → 定位代码 → 准备修改 → 写入变更 → 验证结果 → 准备 PR",
   version: 1,
   steps: stepIds.map((id) => ({
     id,

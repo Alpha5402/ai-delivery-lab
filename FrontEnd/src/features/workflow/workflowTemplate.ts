@@ -5,14 +5,14 @@ import type { WorkflowStepId } from "./types";
 
 // Mirror of Backend/src/workflowTemplates/builtin/defaultTemplate.ts
 const FALLBACK_AGENTS: Record<string, string> = {
-  requirement_intake: "Requirement Composer",
-  clarification: "Clarifier Agent",
-  solution_design: "Planner Agent",
-  module_mapping: "Context Locator",
-  code_generation: "Codegen Skill",
-  repo_write: "Conduit Writer",
-  verification: "Verifier",
-  pull_request: "PR Assistant",
+  requirement_intake: "接收需求",
+  clarification: "确认需求",
+  solution_design: "生成方案",
+  module_mapping: "定位代码",
+  code_generation: "准备修改",
+  repo_write: "写入变更",
+  verification: "验证结果",
+  pull_request: "准备 PR",
 };
 
 const FALLBACK_PROFILE_IDS: Record<string, string> = {
@@ -52,7 +52,7 @@ export const FALLBACK_TEMPLATE: WorkflowTemplateMeta = {
     agentProfileId: FALLBACK_PROFILE_IDS[id],
     verifierProfileId: `${id}-verifier`,
     outputSchemaId: FALLBACK_SCHEMA_IDS[id],
-    defaultExecutionMode: (["clarification", "solution_design", "code_generation", "pull_request"] as string[]).includes(id)
+    defaultExecutionMode: (["clarification", "solution_design", "code_generation", "repo_write", "pull_request"] as string[]).includes(id)
       ? "manual-confirmation" as const
       : "automatic" as const,
     inputRefs: [],

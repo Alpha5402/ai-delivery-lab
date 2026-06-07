@@ -2,6 +2,7 @@ import type { z } from "zod";
 import { runSimpleAgentRuntime } from "../agentRuntime/simpleAgentRuntime.js";
 import { runRuntimeTool } from "../agentRuntime/toolRegistry.js";
 import { env } from "../config/env.js";
+import { tryGoldenPathCodegen } from "./goldenPathCodegen.js";
 import {
   type CodeGenerationPlan,
   type FileChange,
@@ -39,8 +40,8 @@ const agentSpecs: Record<Exclude<WorkflowStepId, "requirement_intake" | "clarifi
   },
   code_generation: {
     schema: codeGenerationPlanSchema,
-    instruction: "制定小步代码生成计划。每个任务都要指向真实或可合理新增的文件，并说明是否需要测试。绝对不要使用绝对路径或包含 .. 的路径。只输出计划，不声称已经写入仓库。",
-    outputContract: "输出 JSON：strategy 为代码生成策略；tasks 为任务数组，每项含 id, title, files, testRequired。",
+    instruction: "制定小步代码生成计划。每个任务都要指向真实或可合理新增的文件，并说明是否需要测试。绝对不要使用绝对路径或包含 .. 的路径。如果对文件内容有把握，可以同时输出 patches 数组，每项包含 path (相对路径), changeType (created|modified), content (完整文件内容)。patches 是可选的，不确定时不输出。",
+    outputContract: "输出 JSON：strategy 为代码生成策略；tasks 为任务数组，每项含 id, title, files, testRequired, coverLayer(可选)；patches 为可选的文件补丁数组，含 path, changeType, content。",
   },
   repo_write: {
     schema: repoWriteResultSchema,
@@ -75,6 +76,32 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
   // pull_request: 优先真实执行 git 操作 + GitHub API 创建 PR
   if (stepId === "pull_request") {
     return runPullRequestStep(run);
+  }
+
+  // golden path: code_generation 对前端计算指标需求输出确定性 patches
+  if (stepId === "code_generation") {
+    const goldenPlan = tryGoldenPathCodegen(run, getCurrentWorkspace() ?? undefined);
+    if (goldenPlan) {
+      recordMetric({
+        agent: stepAgents[stepId],
+        calls: 1,
+        inputTokens: 0,
+        outputTokens: 0,
+        latencyMs: 0,
+        estimatedCost: 0,
+      });
+      return {
+        ...goldenPlan,
+        runtimeTrace: {
+          runtime: "golden-path" as const,
+          workspaceId: getCurrentWorkspace()?.id ?? "",
+          workspaceDir: getCurrentWorkspace()?.workspaceDir,
+          observations: ["Golden path: 前端计算指标 → 确定性 patches"],
+          toolCalls: [],
+          selectedSkillId: getSkillStepSpec(run, stepId, getCurrentWorkspace() ?? undefined).skillId,
+        },
+      };
+    }
   }
 
   const spec = agentSpecs[stepId];
@@ -502,7 +529,7 @@ function buildPrBody(run: WorkflowRun): string {
     const commands = verification.commands as Array<{ label: string; status: string }> | undefined;
     if (commands?.length) sections.push("## Verification\n" + commands.map((c) => `- ${c.label}: ${c.status}`).join("\n"));
   }
-  sections.push("\n---\n🤖 Generated with [Conduit Delivery Lab](https://github.com/Alpha5402/conduit-realworld-example-app)");
+  sections.push("\n---\nGenerated with AI Delivery Workspace");
   return sections.join("\n\n").slice(0, 5_000);
 }
 

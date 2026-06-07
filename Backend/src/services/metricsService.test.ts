@@ -6,7 +6,7 @@ describe("metricsService", () => {
     expect(listMetrics()).toEqual([]);
 
     recordMetric({
-      agent: "Clarifier Agent",
+      agent: "确认需求",
       calls: 1,
       inputTokens: 10,
       outputTokens: 20,
@@ -14,6 +14,6 @@ describe("metricsService", () => {
       estimatedCost: 0,
     });
 
-    expect(listMetrics()).toEqual([expect.objectContaining({ agent: "Clarifier Agent", calls: 1 })]);
+    expect(listMetrics()).toEqual([expect.objectContaining({ agent: "确认需求", calls: 1 })]);
   });
 });

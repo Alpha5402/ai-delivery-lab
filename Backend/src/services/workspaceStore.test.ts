@@ -61,8 +61,8 @@ function createWorkflowRun(projectId: string, id = "run-demo"): WorkflowRun {
     steps: [
       {
         id: "requirement_intake",
-        label: "PM 输入",
-        agent: "Requirement Composer",
+        label: "接收需求",
+        agent: "接收需求",
         status: "success",
         input: { source: "pm" },
         output: {
@@ -71,12 +71,12 @@ function createWorkflowRun(projectId: string, id = "run-demo"): WorkflowRun {
           pattern: "frontend-only",
           targetRepo: "conduit",
         },
-        logs: ["PM 需求已接收"],
+        logs: ["需求已接收"],
       },
       {
         id: "clarification",
-        label: "澄清 Agent",
-        agent: "Clarifier Agent",
+        label: "确认需求",
+        agent: "确认需求",
         status: "waiting-human",
         input: { from: "requirement_intake" },
         logs: [],

@@ -30,12 +30,14 @@ const suggestedTasks = [
 ];
 
 const workflowPreview = [
-  { name: "Clarifier", description: "澄清需求边界，识别缺失信息。" },
-  { name: "Context Locator", description: "定位相关模块、文件和依赖关系。" },
-  { name: "Planner", description: "生成可回放的方案 DSL 与执行计划。" },
-  { name: "Codegen", description: "按计划修改代码并补充必要测试。" },
-  { name: "Quality Gate", description: "运行校验，汇总风险与交付结果。" },
+  { name: "确认需求", description: "先确认边界和关键决策。" },
+  { name: "定位代码", description: "找到相关模块、文件和依赖。" },
+  { name: "生成方案", description: "形成可执行的修改计划。" },
+  { name: "修改代码", description: "写入变更并补充必要测试。" },
+  { name: "验证结果", description: "运行校验并汇总交付风险。" },
 ];
+
+const deliveryPhases = workflowPreview.map((step) => step.name);
 
 function inferPattern(requirement: string): RequirementPattern {
   if (/后端|数据库|接口|幂等|模型|schema/i.test(requirement)) {
@@ -86,7 +88,29 @@ function getRunStatusLabel(status: WorkflowRunSummary["status"]) {
   if (status === "running") return "运行中";
   if (status === "success") return "已完成";
   if (status === "failed") return "失败";
-  return "已暂停";
+  return "需要确认";
+}
+
+function formatStepName(value?: string) {
+  const map: Record<string, string> = {
+    requirement_intake: "接收需求",
+    clarification: "确认需求",
+    solution_design: "生成方案",
+    module_mapping: "定位代码",
+    code_generation: "准备修改",
+    repo_write: "写入变更",
+    verification: "验证结果",
+    pull_request: "准备 PR",
+    "Requirement Composer": "接收需求",
+    "Clarifier Agent": "确认需求",
+    "Planner Agent": "生成方案",
+    "Context Locator": "定位代码",
+    "Codegen Skill": "准备修改",
+    Verifier: "验证结果",
+    "PR Assistant": "准备 PR",
+  };
+  if (value && /Writer$/i.test(value)) return "写入变更";
+  return value ? (map[value] ?? value) : "接收需求";
 }
 
 export function ChatPage() {
@@ -141,8 +165,8 @@ export function ChatPage() {
         }
       } catch {
         if (!isMounted) return;
-        if (currentWorkspace && currentWorkspace.id === activeProjectId) {
-          setWorkspace(currentWorkspace);
+        if (cachedWorkspace && cachedWorkspace.id === activeProjectId) {
+          setWorkspace(cachedWorkspace);
         } else {
           setLoadError("项目工作空间加载失败，请确认 Backend 服务已启动且 SQLite 数据库可访问。");
         }
@@ -184,10 +208,10 @@ export function ChatPage() {
 
   function confirmDeleteRun(run: WorkflowRunSummary) {
     Modal.confirm({
-      title: "删除该 Workflow Run？",
+      title: "删除该交付任务？",
       content: (
         <div>
-          <p>这将删除 Timeline、Runtime Event、Intervention History 与 Artifacts。</p>
+          <p>这将删除阶段进度、运行日志、反馈历史与产出记录。</p>
           <p><strong>{run.title}</strong></p>
           <p className="workflow-delete-warning">该操作不可恢复。</p>
         </div>
@@ -203,9 +227,9 @@ export function ChatPage() {
             ...current,
             workflowRuns: current.workflowRuns.filter((item) => item.id !== run.id),
           } : current);
-          message.success("Workflow Run 已删除");
+          message.success("交付任务已删除");
         } catch (currentError) {
-          message.error(currentError instanceof Error ? currentError.message : "删除 Workflow Run 失败");
+          message.error(currentError instanceof Error ? currentError.message : "删除交付任务失败");
         } finally {
           setDeletingRunId(null);
         }
@@ -240,10 +264,10 @@ export function ChatPage() {
       <AppBreadcrumb project={projectBreadcrumb} />
       <section className="requirement-hero">
         <div>
-          <Text className="eyebrow">AI Requirement Workspace</Text>
-          <Title level={1}>Project Workspace</Title>
+          <Text className="eyebrow">项目任务中心</Text>
+          <Title level={1}>{projectBreadcrumb.name}</Title>
           <Paragraph>
-            Agent 已读取当前项目上下文。现在只需要说明你想交付什么，系统会进入 Clarifier、Context Locator、Planner、Codegen 与 Quality Gate。
+            AI 已读取当前项目上下文。描述你要交付的改动，系统会先确认关键决策，再定位代码、生成方案并验证结果。
           </Paragraph>
         </div>
         <Link className="requirement-hero__link" to="/dashboard">重新选择项目</Link>
@@ -252,15 +276,15 @@ export function ChatPage() {
       <Card className="repo-summary-card" bordered={false}>
         <div className="repo-summary-card__main">
           <div>
-            <Text className="eyebrow">{workspace.hasRepository ? "Repository Ready" : "Project Context Ready"}</Text>
+            <Text className="eyebrow">{workspace.hasRepository ? "代码库已连接" : "项目上下文已准备"}</Text>
             <Title level={2}>{workspace.repoName}</Title>
             <Paragraph>{workspace.architectureSummary}</Paragraph>
           </div>
-          <Button onClick={() => setIsContextOpen(true)}>查看 Agent Context</Button>
+          <Button onClick={() => setIsContextOpen(true)}>查看 AI 上下文</Button>
         </div>
 
         <div className="repo-summary-card__signals">
-          <span>Context Ready</span>
+          <span>AI 上下文就绪</span>
           <span>{workspace.repositoryScan?.filesInspected ?? 0} Files Indexed</span>
           <span>{workspace.agentReadme.fileName} Generated</span>
           <span>{workspace.repositoryScan?.source ?? workspace.mode}</span>
@@ -277,114 +301,92 @@ export function ChatPage() {
           <form onSubmit={handleSubmit}>
             <div className="composer-card__header">
               <div>
-                <Text className="eyebrow">Requirement Composer</Text>
-                <Title level={2}>你希望 Agent 完成什么？</Title>
+                <Text className="eyebrow">新交付任务</Text>
+                <Title level={2}>描述你要交付的改动</Title>
               </div>
-              <Tag color={submitStatus === "creating" ? "processing" : "default"}>Runtime Ready</Tag>
+              <Tag color={submitStatus === "creating" ? "processing" : "default"}>AI 就绪</Tag>
             </div>
 
             <TextArea
               value={requirement}
               onChange={(event) => setRequirement(event.target.value)}
               autoSize={{ minRows: 8, maxRows: 14 }}
-              placeholder="例如：为文章详情页增加字数统计，要求复用现有数据结构，补充纯逻辑测试，并保持现有页面风格。"
+              placeholder="例如：在文章详情页展示正文纯文本字数，保持现有样式，并补充计算逻辑测试。"
             />
+
+            <div className="delivery-phase-strip" aria-label="Delivery phases">
+              {deliveryPhases.map((phase) => <span key={phase}>{phase}</span>)}
+            </div>
+
+            <div className="suggested-task-chips" aria-label="Suggested tasks">
+              {suggestedTasks.map((task) => (
+                <button key={task.title} type="button" onClick={() => setRequirement(task.prompt)}>
+                  {task.title}
+                </button>
+              ))}
+            </div>
 
             {submitStatus === "failed" ? (
               <Alert
                 showIcon
                 type="error"
-                message="Workflow 创建失败，请确认 Backend 服务已启动且 /api/workflows 可访问。"
+                message="交付任务创建失败，请确认 Backend 服务已启动且 /api/workflows 可访问。"
               />
             ) : null}
 
             <div className="composer-card__actions">
-              <Text type="secondary">输入越具体，Clarifier 需要追问的轮次越少。</Text>
+              <Text type="secondary">描述目标、约束和验收标准，AI 会先确认关键决策。</Text>
               <Button type="primary" htmlType="submit" loading={submitStatus === "creating"} disabled={!requirement.trim()}>
-                {submitStatus === "creating" ? "正在启动 Workflow..." : "启动 Workflow"}
+                {submitStatus === "creating" ? "正在创建任务..." : "开始交付"}
               </Button>
             </div>
           </form>
         </Card>
 
-        <aside className="workflow-preview">
-          <Card bordered={false} title="Workflow Preview">
-            <div className="workflow-preview__steps">
-              {workflowPreview.map((step, index) => (
-                <div className="workflow-preview__step" key={step.name}>
-                  <span>{index + 1}</span>
-                  <div>
-                    <strong>{step.name}</strong>
-                    <p>{step.description}</p>
-                  </div>
+        <aside className="workflow-history">
+          <div className="workflow-history__header">
+            <div>
+              <Text className="eyebrow">最近运行</Text>
+              <Title level={3}>交付任务</Title>
+            </div>
+            <Text type="secondary">{project?.workflowRuns.length ?? 0} 个</Text>
+          </div>
+
+          {project?.workflowRuns.length ? (
+            <div className="workflow-history__list">
+              {project.workflowRuns.map((run) => (
+                <div className="workflow-run-card" key={run.id}>
+                  <button type="button" onClick={() => navigate(`/project/${workspace.id}/workflow/${run.id}`)}>
+                    <Tag color={getRunStatusColor(run.status)}>{getRunStatusLabel(run.status)}</Tag>
+                    <div>
+                      <strong>{run.title}</strong>
+                      <span>{run.requirement}</span>
+                    </div>
+                    <small>{formatStepName(run.currentStep)} · {formatRelativeTime(run.updatedAt)}</small>
+                  </button>
+                  <Button
+                    danger
+                    type="text"
+                    size="small"
+                    loading={deletingRunId === run.id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      confirmDeleteRun(run);
+                    }}
+                  >
+                    删除
+                  </Button>
                 </div>
               ))}
             </div>
-          </Card>
+          ) : (
+            <p className="workflow-history__empty">还没有交付任务。创建第一个任务后，它会保留在当前项目下，之后可以继续、回放或查看结果。</p>
+          )}
         </aside>
       </section>
 
-      <section className="workflow-history">
-        <div className="workflow-history__header">
-          <div>
-            <Text className="eyebrow">Workflow History</Text>
-            <Title level={3}>Project Execution History</Title>
-          </div>
-          <Text type="secondary">{project?.workflowRuns.length ?? 0} runs</Text>
-        </div>
-
-        {project?.workflowRuns.length ? (
-          <div className="workflow-history__list">
-            {project.workflowRuns.map((run) => (
-              <div className="workflow-run-card" key={run.id}>
-                <button type="button" onClick={() => navigate(`/project/${workspace.id}/workflow/${run.id}`)}>
-                  <Tag color={getRunStatusColor(run.status)}>{getRunStatusLabel(run.status)}</Tag>
-                  <div>
-                    <strong>{run.title}</strong>
-                    <span>{run.requirement}</span>
-                  </div>
-                  <small>{run.currentStep ?? "Requirement Composer"} · {formatRelativeTime(run.updatedAt)}</small>
-                </button>
-                <Button
-                  danger
-                  type="text"
-                  size="small"
-                  loading={deletingRunId === run.id}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    confirmDeleteRun(run);
-                  }}
-                >
-                  删除
-                </Button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="workflow-history__empty">还没有历史 workflow。创建第一个 Workflow Run 后，它会保留在当前项目下，之后可以继续 resume / replay。</p>
-        )}
-      </section>
-
-      <section className="suggested-tasks">
-        <div className="suggested-tasks__header">
-          <div>
-            <Text className="eyebrow">Suggested Tasks</Text>
-            <Title level={3}>从一个示例任务开始</Title>
-          </div>
-          <Text type="secondary">点击卡片会自动填入 Requirement Composer。</Text>
-        </div>
-        <div className="suggested-tasks__list">
-          {suggestedTasks.map((task) => (
-            <button className="suggested-task-card" key={task.title} type="button" onClick={() => setRequirement(task.prompt)}>
-              <strong>{task.title}</strong>
-              <span>{task.description}</span>
-            </button>
-          ))}
-        </div>
-      </section>
-
       <Drawer
-        title="Agent Context"
+        title="AI 上下文"
         open={isContextOpen}
         width={720}
         onClose={() => setIsContextOpen(false)}

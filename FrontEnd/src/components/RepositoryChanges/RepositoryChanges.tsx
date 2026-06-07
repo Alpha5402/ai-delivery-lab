@@ -29,7 +29,7 @@ export function RepositoryChanges({ repository, result }: { repository: Reposito
             <small>{formatChangeType(file.changeType)} · +{file.additions} / -{file.deletions}</small>
           </article>
         ))}
-        {!result?.filesChanged?.length ? <p className="repository-changes__empty">等待写入 Conduit 后展示文件变更。</p> : null}
+        {!result?.filesChanged?.length ? <p className="repository-changes__empty">等待写入代码库后展示文件变更。</p> : null}
       </div>
     </section>
   );
