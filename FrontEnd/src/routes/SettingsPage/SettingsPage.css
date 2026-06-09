@@ -45,6 +45,14 @@
   background: #fff;
 }
 
+.settings-page__row-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .settings-page__row-meta strong {
   display: block;
   margin-bottom: 4px;
@@ -57,9 +65,222 @@
   color: #6b7280;
 }
 
+.settings-page__git-card {
+  margin-top: 24px;
+}
+
+.settings-page__git-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-page__git-grid label,
+.settings-page__token-row label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-page__git-grid label > span,
+.settings-page__token-row label > span {
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-page__token-row {
+  border-top: 1px solid #eef2f7;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+.settings-page__token-status {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.settings-page__token-chip.ant-tag {
+  align-items: center;
+  border-radius: 6px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  height: 26px;
+  line-height: 18px;
+  margin: 0;
+  padding: 2px 10px;
+}
+
+.settings-page__token-button.ant-btn {
+  align-items: center;
+  background: #fff;
+  border-color: #fecaca;
+  border-radius: 6px;
+  color: #b42318;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  height: 26px;
+  justify-content: center;
+  line-height: 18px;
+  padding: 2px 10px;
+}
+
+.settings-page__token-button.ant-btn:not(:disabled):hover,
+.settings-page__token-button.ant-btn:not(:disabled):focus-visible {
+  background: #fef3f2;
+  border-color: #fda29b;
+  color: #912018;
+}
+
+.settings-page__token-button.ant-btn:disabled {
+  background: #f9fafb;
+  border-color: #e5e7eb;
+  color: #98a2b3;
+}
+
+.settings-page__security-note {
+  color: #6b7280;
+  font-size: 12px;
+  margin: 12px 0 0;
+}
+
+.settings-page__skill-card {
+  margin-top: 24px;
+}
+
+.settings-page__skill-list {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-page__skill-item {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.settings-page__skill-head,
+.settings-page__skill-tags,
+.settings-page__skill-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.settings-page__skill-head {
+  gap: 8px;
+}
+
+.settings-page__skill-head strong {
+  color: #111827;
+  font-size: 14px;
+  line-height: 22px;
+  margin-right: 2px;
+}
+
+.settings-page__skill-tags {
+  gap: 8px;
+}
+
+.settings-page__skill-head .ant-tag,
+.settings-page__skill-tags .ant-tag {
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  margin: 0;
+  padding: 2px 8px;
+}
+
+.settings-page__skill-tags .ant-tag {
+  background: #fff;
+}
+
+.settings-page__skill-meta {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.settings-page__skill-actions {
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.settings-page__skill-button.ant-btn {
+  align-items: center;
+  background: #fff;
+  border-color: #d0d5dd;
+  border-radius: 6px;
+  color: #475467;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 4px;
+  height: 26px;
+  justify-content: center;
+  line-height: 18px;
+  padding: 2px 10px;
+}
+
+.settings-page__skill-button.ant-btn:hover,
+.settings-page__skill-button.ant-btn:focus-visible {
+  background: #f8fafc;
+  border-color: #98a2b3;
+  color: #344054;
+}
+
+.settings-page__skill-button--primary.ant-btn {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.settings-page__skill-button--primary.ant-btn:hover,
+.settings-page__skill-button--primary.ant-btn:focus-visible {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1e40af;
+}
+
+.settings-page__skill-button--danger.ant-btn-dangerous {
+  background: #fff;
+  border-color: #fecaca;
+  color: #b42318;
+}
+
+.settings-page__skill-button--danger.ant-btn-dangerous:hover,
+.settings-page__skill-button--danger.ant-btn-dangerous:focus-visible {
+  background: #fef3f2;
+  border-color: #fda29b;
+  color: #912018;
+}
+
 .settings-page__footer {
   margin-top: 24px;
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+@media (max-width: 760px) {
+  .settings-page__git-grid,
+  .settings-page__token-row {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-page__token-status {
+    justify-content: flex-start;
+  }
 }

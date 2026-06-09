@@ -1,13 +1,14 @@
 import { EventEmitter } from "node:events";
-import type { WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
+import type { AgentMetric, WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
 
 /**
  * Workflow 运行的事件总线：
- * - "update": run 整体快照变更（任意 step.mutate / status 变化都会广播）；
- * - "step": 某个 step 的局部事件（开始 / 结束 / 失败 / waiting-human），可用于细粒度 UI 提示。
- * - "settings": 全局 settings 变更广播到所有 SSE 订阅者。
+ * - "update": run 整体快照变更
+ * - "step": 某个 step 的局部事件
+ * - "settings": 全局 settings 变更
+ * - "metrics": 全局 agent metrics 变更（每次 recordMetric 后广播）
  *
- * 当前以全量 run 快照为主（实现简单、前端 setRun 替换即可），后续若有性能问题再切换为 patch。
+ * 当前以全量 run 快照为主，后续若有性能问题再切换为 patch。
  */
 export type WorkflowUpdateEvent = {
   type: "update";
@@ -27,7 +28,12 @@ export type SettingsChangedEvent = {
   settings: unknown;
 };
 
-export type WorkflowEvent = WorkflowUpdateEvent | WorkflowStepEvent | SettingsChangedEvent;
+export type MetricsChangedEvent = {
+  type: "metrics";
+  metrics: AgentMetric[];
+};
+
+export type WorkflowEvent = WorkflowUpdateEvent | WorkflowStepEvent | SettingsChangedEvent | MetricsChangedEvent;
 
 class WorkflowEventBus extends EventEmitter {
   emitUpdate(run: WorkflowRun) {
@@ -42,14 +48,20 @@ class WorkflowEventBus extends EventEmitter {
     this.emit("global:settings", { type: "settings", settings } satisfies SettingsChangedEvent);
   }
 
+  /** 广播全局 metrics 到所有 SSE 订阅者 */
+  emitMetricsChanged(metrics: AgentMetric[]) {
+    this.emit("global:metrics", { type: "metrics", metrics } satisfies MetricsChangedEvent);
+  }
+
   subscribe(runId: string, listener: (event: WorkflowEvent) => void) {
     const channel = `run:${runId}`;
     this.on(channel, listener);
-    // 同时订阅全局 settings 事件
     this.on("global:settings", listener);
+    this.on("global:metrics", listener);
     return () => {
       this.off(channel, listener);
       this.off("global:settings", listener);
+      this.off("global:metrics", listener);
     };
   }
 }

@@ -8,7 +8,7 @@ import "./StartPage.css";
 
 const { Paragraph, Text, Title } = Typography;
 
-const defaultRepoUrl = "https://github.com/gothinkster/react-redux-realworld-example-app.git";
+const defaultRepoUrl = "https://github.com/Alpha5402/conduit-realworld-example-app.git";
 
 type StartFlowType = "local" | "git";
 type StepStatus = "wait" | "loading" | "finish" | "error";
@@ -234,7 +234,8 @@ export function StartPage() {
     setDeletingProjectId(projectId);
     try {
       await deleteProjectWorkspace(projectId, deleteDirectory);
-      setRecentProjects((current) => current.filter((project) => project.id !== projectId));
+      const projects = await listRecentProjects();
+      setRecentProjects(projects);
       message.success(deleteDirectory ? "项目记录和本地目录已删除" : "项目记录已删除");
       Modal.destroyAll();
     } catch (currentError) {
@@ -344,7 +345,7 @@ export function StartPage() {
 
         {recentProjects.length > 0 ? (
           <div className="recent-projects__list">
-            {recentProjects.slice(0, 4).map((project) => (
+            {recentProjects.map((project) => (
               <div className="recent-project-card" key={project.id}>
                 <button type="button" onClick={() => void handleOpenRecentProject(project.id)}>
                   <span className="recent-project-card__name">{project.name}</span>

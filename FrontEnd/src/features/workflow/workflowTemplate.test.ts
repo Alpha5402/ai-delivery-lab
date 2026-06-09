@@ -40,7 +40,7 @@ describe("workflowTemplate utilities", () => {
   it("deriveStepLabels returns correct labels", () => {
     const labels = deriveStepLabels(FALLBACK_TEMPLATE);
     expect(labels["requirement_intake"]).toBe("接收需求");
-    expect(labels["pull_request"]).toBe("准备 PR");
+    expect(labels["pull_request"]).toBe("提交 PR");
   });
 
   it("deriveStepAgents returns correct agents", () => {
@@ -58,9 +58,10 @@ describe("workflowTemplate utilities", () => {
     }
   });
 
-  it("repo_write waits for review in the fallback template", () => {
-    expect(FALLBACK_TEMPLATE.steps.find((step) => step.id === "repo_write")?.defaultExecutionMode)
+  it("code_generation waits for review in the fallback template", () => {
+    expect(FALLBACK_TEMPLATE.steps.find((step) => step.id === "code_generation")?.defaultExecutionMode)
       .toBe("manual-confirmation");
+    expect(FALLBACK_TEMPLATE.steps.some((step) => step.id === "repo_write")).toBe(false);
   });
 });
 

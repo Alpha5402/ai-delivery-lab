@@ -3,8 +3,8 @@ import { existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { env } from "../config/env.js";
 import type { WorkspaceContext } from "../domain/workspace.js";
+import { getGitRuntimeSettings } from "../services/workflowSettingsService.js";
 import type { RuntimeToolCall, RuntimeToolName } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -38,6 +38,16 @@ const COMMAND_WHITELIST: Record<string, { argv: string[]; description: string }>
 };
 
 type RuntimeToolInput = Record<string, unknown>;
+
+function normalizeGitBranchName(input: unknown) {
+  return String(input ?? "")
+    .replace(/[^A-Za-z0-9._/-]/g, "-")
+    .replace(/\/{2,}/g, "/")
+    .replace(/[-.]+(?=\/)/g, "")
+    .replace(/\/[-.]+/g, "/")
+    .replace(/^[-./]+|[-./]+$/g, "")
+    .slice(0, 60);
+}
 
 export async function runRuntimeTool(
   workspace: WorkspaceContext,
@@ -352,12 +362,13 @@ async function gitConfigIdentity(workspace: WorkspaceContext) {
   if (!workspace.workspaceDir) {
     return { ok: false, reason: "workspaceDir is not available" };
   }
-  if (!env.GIT_USER_NAME || !env.GIT_USER_EMAIL) {
+  const gitSettings = getGitRuntimeSettings();
+  if (!gitSettings.userName || !gitSettings.userEmail) {
     return { ok: false, reason: "GIT_USER_NAME 或 GIT_USER_EMAIL 未配置" };
   }
   try {
-    await execFileAsync("git", ["config", "user.name", env.GIT_USER_NAME], { cwd: workspace.workspaceDir, timeout: 5_000 });
-    await execFileAsync("git", ["config", "user.email", env.GIT_USER_EMAIL], { cwd: workspace.workspaceDir, timeout: 5_000 });
+    await execFileAsync("git", ["config", "user.name", gitSettings.userName], { cwd: workspace.workspaceDir, timeout: 5_000 });
+    await execFileAsync("git", ["config", "user.email", gitSettings.userEmail], { cwd: workspace.workspaceDir, timeout: 5_000 });
     return { ok: true };
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : "git config failed" };
@@ -368,7 +379,7 @@ async function gitCreateBranch(workspace: WorkspaceContext, input: RuntimeToolIn
   if (!workspace.workspaceDir) {
     return { ok: false, reason: "workspaceDir is not available" };
   }
-  const branch = String(input.branch ?? "").replace(/[^A-Za-z0-9._/-]/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 60);
+  const branch = normalizeGitBranchName(input.branch);
   if (!branch) {
     return { ok: false, reason: "invalid branch name" };
   }
@@ -439,22 +450,23 @@ async function gitPushBranch(workspace: WorkspaceContext, input: RuntimeToolInpu
   if (!workspace.workspaceDir) {
     return { ok: false, reason: "workspaceDir is not available" };
   }
-  const remote = env.GITHUB_REMOTE;
-  const token = env.GITHUB_TOKEN || env.GIT_AUTH_TOKEN ;
-  const branch = String(input.branch ?? "");
+  const gitSettings = getGitRuntimeSettings();
+  const remote = gitSettings.githubRemote;
+  const token = gitSettings.token;
+  const branch = normalizeGitBranchName(input.branch);
   if (!branch) {
     return { ok: false, reason: "branch name required" };
   }
   try {
-    // 使用环境变量 GIT_ASKPASS 传递认证，避免 token 出现在进程列表和日志中
+    // 使用 http.extraHeader 传递认证，避免 token 出现在 argv / 进程列表中。
     const extraEnv: Record<string, string> = {};
     if (token) {
-      // 通过 http.extraHeader 注入 token（仅对 GitHub HTTPS 有效）
+      // Git over HTTPS 使用 Basic auth：用户名 + token 作为密码。
       extraEnv.GIT_CONFIG_COUNT = "1";
       extraEnv.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
-      extraEnv.GIT_CONFIG_VALUE_0 = `Authorization: Bearer ${token}`;
+      extraEnv.GIT_CONFIG_VALUE_0 = createGitBasicAuthHeader(token, gitSettings.githubOwner ?? gitSettings.userName);
     }
-    await execFileAsync("git", ["push", "-u", remote, branch], {
+    await execFileAsync("git", ["push", "-u", remote, `HEAD:refs/heads/${branch}`], {
       cwd: workspace.workspaceDir,
       timeout: 60_000,
       env: { ...process.env, ...extraEnv },
@@ -466,6 +478,12 @@ async function gitPushBranch(workspace: WorkspaceContext, input: RuntimeToolInpu
     // extraHeader 方式已避免 token 出现在 argv 里，这里做二次保险
     return { ok: false, reason: token ? errMsg.replace(token, "***") : errMsg };
   }
+}
+
+function createGitBasicAuthHeader(token: string, username?: string) {
+  const credentialUser = username?.trim() || "x-access-token";
+  const encoded = Buffer.from(`${credentialUser}:${token}`, "utf-8").toString("base64");
+  return `Authorization: Basic ${encoded}`;
 }
 
 function detectGitRemoteOwnerRepo(remoteUrl: string): { owner: string; repo: string } | null {
@@ -480,7 +498,8 @@ function detectGitRemoteOwnerRepo(remoteUrl: string): { owner: string; repo: str
 
 async function githubCreatePr(workspace: WorkspaceContext, input: RuntimeToolInput) {
   // GitHub API 需要 token，不支持 password
-  const token = env.GITHUB_TOKEN || env.GIT_AUTH_TOKEN;
+  const gitSettings = getGitRuntimeSettings();
+  const token = gitSettings.token;
   if (!token) {
     return { ok: false, reason: "GITHUB_TOKEN 未配置" };
   }
@@ -490,14 +509,14 @@ async function githubCreatePr(workspace: WorkspaceContext, input: RuntimeToolInp
   const title = String(input.title ?? "").slice(0, 200);
   const body = String(input.body ?? "").slice(0, 5_000);
   const headBranch = String(input.head ?? "");
-  const baseBranch = String(input.base ?? env.GITHUB_BASE_BRANCH);
+  const baseBranch = String(input.base ?? gitSettings.githubBaseBranch);
 
   // 推断 owner/repo
-  let owner = env.GITHUB_OWNER;
-  let repo = env.GITHUB_REPO;
+  let owner = gitSettings.githubOwner;
+  let repo = gitSettings.githubRepo;
   if (!owner || !repo) {
     try {
-      const { stdout } = await execFileAsync("git", ["remote", "get-url", env.GITHUB_REMOTE], { cwd: workspace.workspaceDir, timeout: 5_000 });
+      const { stdout } = await execFileAsync("git", ["remote", "get-url", gitSettings.githubRemote], { cwd: workspace.workspaceDir, timeout: 5_000 });
       const info = detectGitRemoteOwnerRepo(stdout.trim());
       if (info) { owner = info.owner; repo = info.repo; }
     } catch { /* fall through */ }
@@ -531,4 +550,3 @@ async function githubCreatePr(workspace: WorkspaceContext, input: RuntimeToolInp
     return { ok: false, reason: error instanceof Error ? error.message.replace(token, "***") : "GitHub API 调用失败" };
   }
 }
-

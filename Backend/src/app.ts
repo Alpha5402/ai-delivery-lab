@@ -34,7 +34,7 @@ export function createApp() {
   loadAndRegisterJsonSkills();
   registerBuiltinTemplates();
 
-  // 注册 default 8 步 resolver（保持行为等价）
+  // 注册 default 7 步 resolver（repo_write 仅保留 legacy 兼容）
   registerDefaultStepResolvers({
     runClarifierAgent,
     runPlannerAgent,
@@ -47,7 +47,7 @@ export function createApp() {
     buildRuntimeMemoryContext,
   });
 
-  // 注册 default 8 步 verifier（保持行为等价）
+  // 注册 default 7 步 verifier（repo_write 仅保留 legacy 兼容）
   registerDefaultStepVerifiers({
     verifyClarification,
     verifySolutionDsl,

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { runClarifierAgent } from "../agents/clarifierAgent.js";
 import { runPlannerAgent } from "../agents/plannerAgent.js";
+import { generateRequirementTitle } from "../agents/requirementIntakeAgent.js";
 import { runWorkflowStepAgent } from "../agents/workflowStepAgent.js";
 import {
   type ClarificationOutput,
@@ -18,14 +19,19 @@ import {
 import { getCurrentWorkspace } from "./workspaceService.js";
 import { deleteWorkflowRunFromStore, getStoredWorkflowRun, saveWorkflowRunToStore } from "./workspaceStore.js";
 import { workflowEventBus } from "./workflowEvents.js";
-import { getStepExecutionMode } from "./workflowSettingsService.js";
+import { getStepExecutionMode, getWorkflowSettings } from "./workflowSettingsService.js";
 import { buildRuntimeMemoryContext } from "./workflowMemory.js";
 import { runStepVerifier, type VerifierResult } from "./stepVerifiers.js";
 import { resolveConfirmationDecision } from "../workflowExecution/confirmationPolicy.js";
-import { resolveRegisteredStepOutput } from "../workflowExecution/stepResolverRegistry.js";
+import { resolveRegisteredStepOutput, type WorkflowStepRunOptions } from "../workflowExecution/stepResolverRegistry.js";
 import { getSkillStepSpec } from "../skills/skillRegistry.js";
 
 const runs = new Map<string, WorkflowRun>();
+
+type CreateWorkflowRunInput = Omit<RequirementDraft, "title"> & {
+  title?: string;
+  projectId?: string;
+};
 
 /**
  * 标记某个 run 是否正在被后台 promise 推进，避免并发 autoContinue 重入。
@@ -55,8 +61,24 @@ function now() {
   return new Date().toISOString();
 }
 
+/** 使用 run.steps 的当前顺序（而非全局 stepOrder），兼容 7/8 步和历史 run */
+function getStepIndex(run: WorkflowRun, stepId: WorkflowStepId): number {
+  return run.steps.map((s) => s.id).indexOf(stepId as typeof stepOrder[number]);
+}
+
+/** 根据 settings 获取新 run 的 step 顺序（过滤可选步骤） */
+function getStepOrderForNewRun(): WorkflowStepId[] {
+  const settings = getWorkflowSettings();
+  let order = [...stepOrder];
+  if (!settings.enabledOptionalSteps.code_review) {
+    order = order.filter((id) => id !== "code_review");
+  }
+  return order as WorkflowStepId[];
+}
+
 function createSteps(requirement: RequirementDraft): StepRun[] {
-  return stepOrder.map((stepId, index) => ({
+  const order = getStepOrderForNewRun();
+  return order.map((stepId, index) => ({
     id: stepId,
     label: stepLabels[stepId],
     agent: stepAgents[stepId],
@@ -153,16 +175,23 @@ export function getWorkflowRun(runId: string) {
   return stored;
 }
 
-export async function createWorkflowRun(input: RequirementDraft & { projectId?: string }) {
+export async function createWorkflowRun(input: CreateWorkflowRunInput) {
   const timestamp = now();
+  const title = input.title?.trim() || await generateRequirementTitle(input.rawText);
+  const requirement: RequirementDraft = {
+    title,
+    rawText: input.rawText,
+    pattern: input.pattern,
+    targetRepo: input.targetRepo,
+  };
   const run: WorkflowRun = {
     id: `run-${randomUUID()}`,
-    title: input.title,
+    title,
     createdAt: timestamp,
     updatedAt: timestamp,
     projectId: input.projectId ?? getCurrentWorkspace()?.id,
     activeStepId: "clarification",
-    steps: createSteps(input),
+    steps: createSteps(requirement),
   };
 
   commitRun(run);
@@ -175,7 +204,7 @@ export async function createWorkflowRun(input: RequirementDraft & { projectId?: 
 
 export function updateStepOutput(runId: string, stepId: WorkflowStepId, output: unknown) {
   const run = getExistingRun(runId);
-  const stepIndex = stepOrder.indexOf(stepId);
+  const stepIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
 
   run.steps = run.steps.map((step) => {
     if (step.id === stepId) {
@@ -191,8 +220,12 @@ export function updateStepOutput(runId: string, stepId: WorkflowStepId, output: 
 }
 
 export function replayFromStep(runId: string, stepId: WorkflowStepId) {
+  if (stepId === "requirement_intake") {
+    throw new Error("接收需求是初始输入阶段，不能重放");
+  }
+
   const run = getExistingRun(runId);
-  const replayIndex = stepOrder.indexOf(stepId);
+  const replayIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
   run.activeStepId = stepId;
   run.steps = run.steps.map((step, index) => {
     if (index < replayIndex) {
@@ -211,6 +244,7 @@ export function replayFromStep(runId: string, stepId: WorkflowStepId) {
         output: undefined,
         startedAt: undefined,
         finishedAt: undefined,
+        interventions: [],
         logs: [...step.logs, "从这里开始重放下游流程", "Runtime 将根据 Step 模式自动继续，直到需要人工介入"],
         replayCount: updatedCount,
         history: updatedHistory,
@@ -223,6 +257,7 @@ export function replayFromStep(runId: string, stepId: WorkflowStepId) {
       output: undefined,
       startedAt: undefined,
       finishedAt: undefined,
+      interventions: [],
       logs: [],
       replayCount: updatedCount,
       history: updatedHistory,
@@ -241,7 +276,7 @@ export function replayFromStep(runId: string, stepId: WorkflowStepId) {
  */
 export function confirmStep(runId: string, stepId: WorkflowStepId) {
   const run = getExistingRun(runId);
-  const stepIndex = stepOrder.indexOf(stepId);
+  const stepIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
   const step = run.steps[stepIndex];
   if (!step) {
     throw new Error(`Step not found: ${stepId}`);
@@ -255,7 +290,7 @@ export function confirmStep(runId: string, stepId: WorkflowStepId) {
     throw new Error(`Step ${stepId} has no output to confirm`);
   }
 
-  const nextStepId = stepOrder[stepIndex + 1] ?? stepId;
+  const nextStepId = run.steps[stepIndex + 1]?.id ?? stepId;
   run.activeStepId = nextStepId;
   run.steps = run.steps.map((current) => {
     if (current.id === stepId) {
@@ -292,9 +327,9 @@ export function confirmStep(runId: string, stepId: WorkflowStepId) {
  * - 完成后根据执行模式（automatic vs manual-confirmation）决定是否继续推进；
  * - 失败则把 step 标 failed 并广播。
  */
-export async function runStep(runId: string, stepId: WorkflowStepId) {
+export async function runStep(runId: string, stepId: WorkflowStepId, options?: WorkflowStepRunOptions) {
   const run = getExistingRun(runId);
-  const stepIndex = stepOrder.indexOf(stepId);
+  const stepIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
   const step = run.steps[stepIndex];
 
   if (!step) {
@@ -328,17 +363,17 @@ export async function runStep(runId: string, stepId: WorkflowStepId) {
   });
 
   // 后台异步推进；调用方拿到的是"刚切到 running"的快照。
-  void executeStepAndAdvance(run.id, stepId);
+  void executeStepAndAdvance(run.id, stepId, options);
 
   return runs.get(run.id) ?? run;
 }
 
-async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
-  const stepIndex = stepOrder.indexOf(stepId);
+async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId, options?: WorkflowStepRunOptions) {
   const MAX_REPAIR_ATTEMPTS = 1;
 
   try {
     const run = getExistingRun(runId);
+    const stepIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
 
     // ---- 先切换到 running，让 SSE 前端立刻看到进度 ----
     run.steps = run.steps.map((current) =>
@@ -355,7 +390,7 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
     });
 
     // ---- 生成 → 校验 → (可选)修复一次 ----
-    let output = await resolveStepOutput(run, stepId);
+    let output = await resolveStepOutput(run, stepId, { runOptions: options });
     const workspace = getCurrentWorkspace() ?? undefined;
     let verifier: VerifierResult = runStepVerifier(stepId, output, workspace);
     let repairAttempts = 0;
@@ -376,7 +411,7 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
         const followUp = stepId === "clarification"
           ? { previousOutput: output, reasons: verifier.qualityGate.reasons }
           : undefined;
-        output = await resolveStepOutput(run, stepId, followUp ? { followUp } : undefined);
+        output = await resolveStepOutput(run, stepId, followUp ? { followUp, runOptions: options } : { runOptions: options });
         verifier = runStepVerifier(stepId, output, workspace);
         verifier.qualityGate.repairAttempts = repairAttempts;
       } catch (error) {
@@ -403,7 +438,7 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId) {
     const shouldAutoContinue = confirmation.shouldAutoContinue;
     const nextStatus = confirmation.nextStatus;
 
-    const nextStepId = stepOrder[stepIndex + 1] ?? stepId;
+    const nextStepId = run.steps[stepIndex + 1]?.id ?? stepId;
     latest.activeStepId = shouldAutoContinue ? nextStepId : stepId;
 
     const gateLogs = buildGateLogs(verifier.qualityGate, mode, confirmation);
@@ -575,6 +610,55 @@ export async function addInterventionAndRegenerate(runId: string, stepId: Workfl
     createdAt: now(),
   };
 
+  // Legacy repo_write 反馈需要回退到 code_generation 重跑（新 run 已没有独立 repo_write stage）。
+  if (stepId === "repo_write") {
+    // 将用户反馈注入 code_generation 的 interventions，确保重跑时模型能看到
+    const codegenFeedback: InterventionMessage = {
+      id: `code_generation-user-${Date.now()}`,
+      stepId: "code_generation",
+      role: "user",
+      content: `来自生成代码反馈：${message}`,
+      createdAt: now(),
+    };
+    const codegenAgentMsg: InterventionMessage = {
+      id: `code_generation-agent-${Date.now()}`,
+      stepId: "code_generation",
+      role: "agent",
+      content: "已记录生成代码阶段的用户反馈，将重新生成代码。",
+      createdAt: now(),
+    };
+
+    run.steps = run.steps.map((current) => {
+      if (current.id === "code_generation") {
+        return {
+          ...current,
+          status: "idle" as const,
+          output: undefined,
+          finishedAt: undefined,
+          interventions: [...(current.interventions ?? []), codegenFeedback, codegenAgentMsg],
+          logs: [...current.logs, "下游 repo_write 用户反馈要求重新生成代码"],
+        };
+      }
+      if (current.id === "repo_write") {
+        return {
+          ...current,
+          status: "idle" as const,
+          output: undefined,
+          finishedAt: undefined,
+          interventions: [...(current.interventions ?? []), userMessage, agentMessage],
+          logs: [...current.logs, "用户提交反馈，回退到代码生成阶段"],
+        };
+      }
+      return current;
+    });
+
+    run.activeStepId = "code_generation";
+    commitRun(run);
+
+    void scheduleAutoContinue(run.id, "code_generation");
+    return runs.get(run.id) ?? run;
+  }
+
   // TODO 3：显式 reset，避免 runStep 误进 confirm 分支（旧逻辑会把"提了介入"解释成"确认通过"）。
   run.steps = run.steps.map((current) => current.id === stepId
     ? {
@@ -600,7 +684,7 @@ export function getStepHistory(runId: string, stepId: WorkflowStepId) {
 
 export function restoreStepSnapshot(runId: string, stepId: WorkflowStepId, snapshotId: string, _replayDownstream?: boolean) {
   const run = getExistingRun(runId);
-  const stepIndex = stepOrder.indexOf(stepId);
+  const stepIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
   const step = run.steps[stepIndex];
   if (!step) throw new Error(`Step not found: ${stepId}`);
 
@@ -724,10 +808,10 @@ async function advanceWorkflow(runId: string) {
 async function resolveStepOutput(
   run: WorkflowRun,
   stepId: WorkflowStepId,
-  options?: { followUp?: { previousOutput: unknown; reasons: string[] } },
+  options?: { followUp?: { previousOutput: unknown; reasons: string[] }; runOptions?: WorkflowStepRunOptions },
 ) {
   // PR3: 优先走注册表，未注册时 fallback 到旧硬编码
-  const registryOutput = await resolveRegisteredStepOutput({ run, stepId, followUp: options?.followUp });
+  const registryOutput = await resolveRegisteredStepOutput({ run, stepId, followUp: options?.followUp, runOptions: options?.runOptions });
   if (registryOutput !== null) return registryOutput;
 
   // ---- 旧路径 (fallback，保留至所有测试/环境迁移完成) ----
@@ -766,7 +850,7 @@ async function resolveStepOutput(
     return runPlannerAgent(requirement, clarification, { runtimeMemory });
   }
 
-  return runWorkflowStepAgent(stepId, run);
+  return runWorkflowStepAgent(stepId, run, options?.runOptions);
 }
 
 function getStepOutput<T>(run: WorkflowRun, stepId: WorkflowStepId) {

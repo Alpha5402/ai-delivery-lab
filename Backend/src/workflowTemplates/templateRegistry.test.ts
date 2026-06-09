@@ -22,7 +22,7 @@ describe("WorkflowTemplateRegistry", () => {
     expect(t!.id).toBe(DEFAULT_TEMPLATE_ID);
   });
 
-  it("default template has exactly 8 steps", () => {
+  it("default template has exactly 7 steps", () => {
     const t = getDefaultWorkflowTemplate();
     expect(t.steps).toHaveLength(8);
   });
@@ -106,11 +106,12 @@ describe("domain/workflow.ts consistency with default template", () => {
     }
   });
 
-  it("repo_write waits for review after writing files", () => {
+  it("code_generation waits for review after writing files", () => {
     const t = getDefaultWorkflowTemplate();
-    const repoWrite = t.steps.find((step) => step.id === "repo_write");
-    expect(repoWrite?.defaultExecutionMode).toBe("manual-confirmation");
-    expect(defaultStepExecutionModes.repo_write).toBe("manual-confirmation");
+    const codeGeneration = t.steps.find((step) => step.id === "code_generation");
+    expect(codeGeneration?.defaultExecutionMode).toBe("manual-confirmation");
+    expect(t.steps.some((step) => step.id === "repo_write")).toBe(false);
+    expect(defaultStepExecutionModes.code_generation).toBe("manual-confirmation");
   });
 });
 

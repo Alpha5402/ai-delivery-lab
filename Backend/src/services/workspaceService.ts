@@ -1,10 +1,10 @@
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { generateAgentReadme } from "../agents/repositoryContextAgent.js";
-import { env } from "../config/env.js";
 import type {
   ImportWorkspaceInput,
   QuickProjectInput,
@@ -13,6 +13,7 @@ import type {
 } from "../domain/workspace.js";
 import { logWorkspaceEvent, summarizeError } from "./workspaceLogger.js";
 import { deleteWorkspaceFromStore, getSavedProject, getSavedWorkspace, listRecentProjects, listSavedWorkspaces, saveWorkspaceToStore, touchSavedWorkspace } from "./workspaceStore.js";
+import { getGitRuntimeSettings } from "./workflowSettingsService.js";
 
 const execFileAsync = promisify(execFile);
 const workspaceRoot = resolveWorkspaceRoot();
@@ -113,7 +114,7 @@ export function openParsedWorkspace(workspaceId: string) {
   return workspace;
 }
 
-export function listRecentProjectWorkspaces(limit = 20) {
+export function listRecentProjectWorkspaces(limit?: number) {
   return listRecentProjects(limit);
 }
 
@@ -142,7 +143,11 @@ export async function deleteProjectWorkspace(projectId: string, deleteDirectory 
     await rm(workspace.workspaceDir, { recursive: true, force: true });
   }
 
-  deleteWorkspaceFromStore(projectId);
+  const deletedRows = deleteWorkspaceFromStore(projectId);
+  if (deletedRows < 1) {
+    throw new Error(`Workspace delete did not remove a database row: ${projectId}`);
+  }
+
   if (currentWorkspace?.id === projectId) {
     currentWorkspace = null;
   }
@@ -183,11 +188,12 @@ async function scanRepository(repoUrl: string, repoName: string): Promise<Reposi
     logWorkspaceEvent("clone.start", { repoUrl, clonePath, repoName, timeoutMs: gitCloneTimeoutMs });
     // 对 GitHub HTTPS URL 注入认证（和 push 方式一致，使用 http.extraHeader）
     const cloneEnv: Record<string, string> = {};
-    const cloneToken = env.GITHUB_TOKEN || env.GIT_AUTH_TOKEN ;
+    const gitSettings = getGitRuntimeSettings();
+    const cloneToken = gitSettings.token;
     if (cloneToken && repoUrl.startsWith("https://github.com/")) {
       cloneEnv.GIT_CONFIG_COUNT = "1";
       cloneEnv.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
-      cloneEnv.GIT_CONFIG_VALUE_0 = `Authorization: Bearer ${cloneToken}`;
+      cloneEnv.GIT_CONFIG_VALUE_0 = createGitBasicAuthHeader(cloneToken, gitSettings.githubOwner ?? gitSettings.userName);
     }
     await execFileAsync("git", ["clone", "--depth", "1", repoUrl, clonePath], {
       timeout: gitCloneTimeoutMs,
@@ -198,7 +204,8 @@ async function scanRepository(repoUrl: string, repoName: string): Promise<Reposi
   } catch (error) {
     await rm(clonePath, { recursive: true, force: true }).catch(() => undefined);
     logWorkspaceEvent("clone.failed", { repoUrl, clonePath, repoName, error: summarizeError(error) });
-    throw new Error(`仓库克隆失败：${formatGitCloneError(error)}`);
+    const gitSettings = getGitRuntimeSettings();
+    throw new Error(`仓库克隆失败：${formatGitCloneError(error, gitSettings.token ? describeTokenForDiagnostics(gitSettings.token, gitSettings.tokenSource) : undefined)}`);
   }
 }
 
@@ -467,7 +474,33 @@ async function resolveClonePath(repoName: string) {
   return path.join(workspaceRoot, `${repoName}-${Date.now().toString(36)}`);
 }
 
-function formatGitCloneError(error: unknown) {
+function isGitAuthFailureDetail(detail: string) {
+  const lower = detail.toLowerCase();
+  return lower.includes("invalid credentials") ||
+    lower.includes("authentication failed") ||
+    lower.includes("bad credentials");
+}
+
+function describeTokenForDiagnostics(token: string, source: "settings" | "env" | "none") {
+  const digest = createHash("sha256").update(token).digest("hex");
+  return {
+    source,
+    length: token.length,
+    sha256: digest,
+    authMethod: "git http.extraHeader: Authorization: Basic base64(username:<token>)",
+  };
+}
+
+function createGitBasicAuthHeader(token: string, username?: string) {
+  const credentialUser = username?.trim() || "x-access-token";
+  const encoded = Buffer.from(`${credentialUser}:${token}`, "utf-8").toString("base64");
+  return `Authorization: Basic ${encoded}`;
+}
+
+function formatGitCloneError(
+  error: unknown,
+  tokenDiagnostics?: ReturnType<typeof describeTokenForDiagnostics>,
+) {
   if (!error || typeof error !== "object") {
     return "git clone failed";
   }
@@ -478,5 +511,12 @@ function formatGitCloneError(error: unknown) {
     .join("\n")
     .trim();
 
-  return details || `git clone failed${maybeError.code ? ` (${maybeError.code})` : ""}`;
+  const fallback = details || `git clone failed${maybeError.code ? ` (${maybeError.code})` : ""}`;
+  if (tokenDiagnostics && isGitAuthFailureDetail(fallback)) {
+    return `GitHub Token 无效、已过期，或没有访问该仓库的权限。请在设置中更新 Token，或确认 fine-grained token 已授权目标 owner/repo。
+Token 诊断：source=${tokenDiagnostics.source}, length=${tokenDiagnostics.length}, sha256=${tokenDiagnostics.sha256}, auth=${tokenDiagnostics.authMethod}
+${fallback}`;
+  }
+
+  return fallback;
 }

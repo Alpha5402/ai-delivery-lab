@@ -9,10 +9,10 @@ function formatStepLabel(value: string) {
     "澄清 Agent": "确认需求",
     "方案 DSL": "生成方案",
     "模块定位": "定位代码",
-    "代码计划": "准备修改",
-    "写入仓库": "写入变更",
+    "代码计划": "生成代码",
+    "写入仓库": "生成代码",
     "Lint / 单测": "验证结果",
-    "提交 PR": "准备 PR",
+    "提交 PR": "提交 PR",
   };
   return labelMap[value] ?? value;
 }

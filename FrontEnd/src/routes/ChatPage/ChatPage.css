@@ -324,7 +324,7 @@
 }
 
 .workflow-run-card strong,
-.workflow-run-card span {
+.workflow-run-card__description {
   display: block;
 }
 
@@ -334,12 +334,20 @@
   margin-bottom: 4px;
 }
 
-.workflow-run-card span,
+.workflow-run-card__description,
 .workflow-history__empty {
   color: var(--color-muted);
   font-size: 13px;
   line-height: 1.6;
   margin: 0;
+}
+
+.workflow-run-card__status.ant-tag {
+  align-items: center;
+  display: inline-flex;
+  justify-self: start;
+  margin: 0;
+  width: fit-content;
 }
 
 .workflow-run-card small {

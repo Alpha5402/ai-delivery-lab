@@ -7,6 +7,7 @@ import type { RequirementPattern } from "../../features/workflow/types";
 import type { ProjectWorkspace, WorkflowRunSummary, WorkspaceContext } from "../../features/workspace/types";
 import { loadWorkspace, saveWorkspace } from "../../features/workspace/workspaceStorage";
 import "./ChatPage.css";
+import { describe } from "vitest";
 
 const { Paragraph, Text, Title } = Typography;
 const { TextArea } = Input;
@@ -27,13 +28,48 @@ const suggestedTasks = [
     description: "将散落的登录状态收敛到统一 Context，减少重复判断。",
     prompt: "将登录状态迁移到统一的 React Context，梳理调用点，保持现有页面行为不变。",
   },
+  {
+    title: "文章列表加阅读量字段",
+    description: "在首页文章卡片上增加阅读量 icon + 数字展示（前端假数据即可，不改后端）",
+    prompt: "在首页文章卡片上增加阅读量 icon + 数字展示（前端假数据即可，不改后端）"
+  },
+  {
+    title: "Popular Tags 侧边栏前 5 个打标",
+    description: "为接口返回的前 5 个标签增加视觉标识（纯前端取前 5，不引入排序语义）",
+    prompt: "为接口返回的前 5 个标签增加视觉标识（纯前端取前 5，不引入排序语义）"
+  },
+  {
+    title: "个人主页新增 About Me Tab",
+    description: "在 Profile 页面现有 My Articles / Favorited Articles 之外新增一个 About Me Tab，展示 User.bio",
+    prompt: "在 Profile 页面现有 My Articles / Favorited Articles 之外新增一个 About Me Tab，展示 User.bio"
+  },
+  {
+    title: "文章加封面图字段",
+    description: "Article 模型加 coverImage 字段，新建/编辑文章表单支持输入 URL，列表卡片和详情页展示封面图",
+    prompt: "Article 模型加 coverImage 字段，新建/编辑文章表单支持输入 URL，列表卡片和详情页展示封面图"
+  },
+  {
+    title: "评论支持点赞（含幂等）",
+    description: "Comment 增加 likeCount，并设计幂等点赞机制",
+    prompt: "Comment 增加 likeCount，并设计幂等点赞机制"
+  },
+  {
+    title: "文章草稿功能",
+    description: "Article 增加 status 枚举（draft/published），编辑器新增“保存草稿”，列表默认过滤 draft，个人主页增加 Drafts Tab",
+    prompt: "Article 增加 status 枚举（draft/published），编辑器新增“保存草稿”，列表默认过滤 draft，个人主页增加 Drafts Tab"
+  }, 
+  {
+    title: "文章最后编辑时间展示",
+    description: "利用 updatedAt 在文章详情页展示“最后编辑于 X 小时前”，同时后端保证 update 会刷新该字段",
+    prompt: "利用 updatedAt 在文章详情页展示“最后编辑于 X 小时前”，同时后端保证 update 会刷新该字段"
+  }
 ];
 
 const workflowPreview = [
   { name: "确认需求", description: "先确认边界和关键决策。" },
   { name: "定位代码", description: "找到相关模块、文件和依赖。" },
   { name: "生成方案", description: "形成可执行的修改计划。" },
-  { name: "修改代码", description: "写入变更并补充必要测试。" },
+  { name: "生成代码", description: "生成变更并补充必要测试。" },
   { name: "验证结果", description: "运行校验并汇总交付风险。" },
 ];
 
@@ -97,19 +133,19 @@ function formatStepName(value?: string) {
     clarification: "确认需求",
     solution_design: "生成方案",
     module_mapping: "定位代码",
-    code_generation: "准备修改",
-    repo_write: "写入变更",
+    code_generation: "生成代码",
+    repo_write: "生成代码",
     verification: "验证结果",
-    pull_request: "准备 PR",
+    pull_request: "提交 PR",
     "Requirement Composer": "接收需求",
     "Clarifier Agent": "确认需求",
     "Planner Agent": "生成方案",
     "Context Locator": "定位代码",
-    "Codegen Skill": "准备修改",
+    "Codegen Skill": "生成代码",
     Verifier: "验证结果",
-    "PR Assistant": "准备 PR",
+    "PR Assistant": "提交 PR",
   };
-  if (value && /Writer$/i.test(value)) return "写入变更";
+  if (value && /Writer$/i.test(value)) return "生成代码";
   return value ? (map[value] ?? value) : "接收需求";
 }
 
@@ -193,7 +229,6 @@ export function ChatPage() {
       const run = await createWorkflowRun({
         projectId: workspace?.id,
         workspaceId: workspace?.id,
-        title: trimmedRequirement.slice(0, 28),
         rawText: trimmedRequirement,
         pattern: inferPattern(trimmedRequirement),
         targetRepo: "conduit",
@@ -357,10 +392,10 @@ export function ChatPage() {
               {project.workflowRuns.map((run) => (
                 <div className="workflow-run-card" key={run.id}>
                   <button type="button" onClick={() => navigate(`/project/${workspace.id}/workflow/${run.id}`)}>
-                    <Tag color={getRunStatusColor(run.status)}>{getRunStatusLabel(run.status)}</Tag>
+                    <Tag className="workflow-run-card__status" color={getRunStatusColor(run.status)}>{getRunStatusLabel(run.status)}</Tag>
                     <div>
                       <strong>{run.title}</strong>
-                      <span>{run.requirement}</span>
+                      <span className="workflow-run-card__description">{run.requirement}</span>
                     </div>
                     <small>{formatStepName(run.currentStep)} · {formatRelativeTime(run.updatedAt)}</small>
                   </button>

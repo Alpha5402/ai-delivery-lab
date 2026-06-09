@@ -137,6 +137,25 @@ describe("WorkspaceStore", () => {
     store.close();
   });
 
+  it("deletes workspace records and related workflow runs from SQLite", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "workspace-store-delete-test-"));
+    const dbPath = path.join(dir, "workspaces.sqlite");
+    const store = new WorkspaceStore(dbPath);
+    const workspace = createWorkspace();
+    const run = createWorkflowRun(workspace.id);
+
+    store.upsert(workspace);
+    store.saveWorkflowRun(workspace.id, run);
+
+    expect(store.deleteWorkspace(workspace.id)).toBe(1);
+    expect(store.get(workspace.id)).toBeNull();
+    expect(store.getProject(workspace.id)).toBeNull();
+    expect(store.getWorkflowRun(run.id)).toBeNull();
+    expect(store.listRecentProjects()).toEqual([]);
+
+    store.close();
+  });
+
   it("migrates legacy workspace databases without last_opened_at", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "workspace-store-legacy-test-"));
     const dbPath = path.join(dir, "workspaces.sqlite");

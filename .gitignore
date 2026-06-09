@@ -9,3 +9,5 @@ workspace/
 *.sqlite
 .DS_Store
 *.tsbuildinfo
+Backend/data/
+*.secret

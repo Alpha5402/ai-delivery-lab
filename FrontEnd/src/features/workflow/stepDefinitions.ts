@@ -10,7 +10,6 @@ export const stepOrder: WorkflowStepId[] = [
   "solution_design",
   "module_mapping",
   "code_generation",
-  "repo_write",
   "verification",
   "pull_request",
 ];
@@ -20,10 +19,11 @@ export const stepLabels: Record<WorkflowStepId, string> = {
   clarification: "确认需求",
   solution_design: "生成方案",
   module_mapping: "定位代码",
-  code_generation: "准备修改",
-  repo_write: "写入变更",
+  code_generation: "生成代码",
+  code_review: "代码审查",
+  repo_write: "生成代码",
   verification: "验证结果",
-  pull_request: "准备 PR",
+  pull_request: "提交 PR",
 };
 
 export const stepAgents: Record<WorkflowStepId, string> = {
@@ -31,8 +31,9 @@ export const stepAgents: Record<WorkflowStepId, string> = {
   clarification: "确认需求",
   solution_design: "生成方案",
   module_mapping: "定位代码",
-  code_generation: "准备修改",
-  repo_write: "写入变更",
+  code_generation: "生成代码",
+  code_review: "代码审查 Agent",
+  repo_write: "生成代码",
   verification: "验证结果",
-  pull_request: "准备 PR",
+  pull_request: "提交 PR",
 };

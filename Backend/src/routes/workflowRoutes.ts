@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import {
   createWorkflowSchema,
   createInterventionSchema,
@@ -19,6 +20,7 @@ import {
   updateStepOutput,
 } from "../services/workflowService.js";
 import { getCurrentWorkspace } from "../services/workspaceService.js";
+import { listMetrics } from "../services/metricsService.js";
 import { workflowEventBus } from "../services/workflowEvents.js";
 import {
   getWorkflowSettings,
@@ -38,6 +40,13 @@ function enrichWithSkill(run: WorkflowRun): WorkflowRun {
 }
 
 export const workflowRoutes = Router();
+
+const runStepOptionsSchema = z.object({
+  pullRequest: z.object({
+    branch: z.string().optional(),
+    commitMessage: z.string().optional(),
+  }).optional(),
+}).optional();
 
 // ---- Settings ----------------------------------------------------------------
 
@@ -78,7 +87,7 @@ workflowRoutes.post("/", async (req, res) => {
 
   const run = await createWorkflowRun({
     projectId: parsed.data.projectId ?? parsed.data.workspaceId,
-    title: parsed.data.title ?? parsed.data.rawText.slice(0, 40),
+    title: parsed.data.title,
     rawText: parsed.data.rawText,
     pattern: parsed.data.pattern,
     targetRepo: parsed.data.targetRepo,
@@ -116,18 +125,23 @@ workflowRoutes.get("/:runId/stream", (req, res) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  // 初始快照，前端订阅成功后立刻渲染。
-  send("update", { run: enrichWithSkill(run) });
-
+  // 先订阅，再发送最新快照——避免订阅与快照之间的丢事件窗口
   const unsubscribe = workflowEventBus.subscribe(req.params.runId, (event) => {
     if (event.type === "update") {
       send("update", { run: enrichWithSkill(event.run) });
     } else if (event.type === "settings") {
       send("settings", { settings: event.settings });
+    } else if (event.type === "metrics") {
+      send("metrics", { metrics: event.metrics });
     } else {
       send("step", event);
     }
   });
+
+  // 订阅后再发送最新快照 + 初始 metrics
+  const latest = getWorkflowRun(req.params.runId);
+  if (latest) send("update", { run: enrichWithSkill(latest) });
+  send("metrics", { metrics: listMetrics() });
 
   // 心跳，避免代理切断长连接。
   const heartbeat = setInterval(() => {
@@ -161,14 +175,15 @@ workflowRoutes.post("/:runId/steps/:stepId/interventions", async (req, res) => {
 
 workflowRoutes.post("/:runId/steps/:stepId/run", async (req, res) => {
   const parsedStepId = workflowStepIdSchema.safeParse(req.params.stepId);
+  const parsedBody = runStepOptionsSchema.safeParse(req.body);
 
-  if (!parsedStepId.success) {
-    res.status(400).json({ message: "Invalid step id" });
+  if (!parsedStepId.success || !parsedBody.success) {
+    res.status(400).json({ message: "Invalid step run payload" });
     return;
   }
 
   try {
-    res.json(enrichWithSkill(await runStep(req.params.runId, parsedStepId.data)));
+    res.json(enrichWithSkill(await runStep(req.params.runId, parsedStepId.data, parsedBody.data)));
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "Workflow step failed" });
   }

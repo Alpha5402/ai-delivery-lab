@@ -9,10 +9,11 @@ const FALLBACK_AGENTS: Record<string, string> = {
   clarification: "确认需求",
   solution_design: "生成方案",
   module_mapping: "定位代码",
-  code_generation: "准备修改",
-  repo_write: "写入变更",
+  code_generation: "生成代码",
+  code_review: "代码审查",
+  repo_write: "生成代码",
   verification: "验证结果",
-  pull_request: "准备 PR",
+  pull_request: "提交 PR",
 };
 
 const FALLBACK_PROFILE_IDS: Record<string, string> = {
@@ -21,6 +22,7 @@ const FALLBACK_PROFILE_IDS: Record<string, string> = {
   solution_design: "planner-agent",
   module_mapping: "repository-mapper",
   code_generation: "codegen-skill",
+  code_review: "code-review-agent",
   repo_write: "repository-writer",
   verification: "verification-runner",
   pull_request: "pr-assistant",
@@ -32,6 +34,7 @@ const FALLBACK_SCHEMA_IDS: Record<string, string> = {
   solution_design: "solutionDsl",
   module_mapping: "moduleMapping",
   code_generation: "codeGenerationPlan",
+  code_review: "codeReviewResult",
   repo_write: "repoWriteResult",
   verification: "verificationResult",
   pull_request: "pullRequestResult",
@@ -52,7 +55,7 @@ export const FALLBACK_TEMPLATE: WorkflowTemplateMeta = {
     agentProfileId: FALLBACK_PROFILE_IDS[id],
     verifierProfileId: `${id}-verifier`,
     outputSchemaId: FALLBACK_SCHEMA_IDS[id],
-    defaultExecutionMode: (["clarification", "solution_design", "code_generation", "repo_write", "pull_request"] as string[]).includes(id)
+    defaultExecutionMode: (["clarification", "solution_design", "code_generation", "pull_request"] as string[]).includes(id)
       ? "manual-confirmation" as const
       : "automatic" as const,
     inputRefs: [],

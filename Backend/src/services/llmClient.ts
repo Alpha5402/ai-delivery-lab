@@ -11,6 +11,7 @@ type ChatCompletionResponse = {
     message?: {
       content?: string;
     };
+    finish_reason?: string;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -25,6 +26,7 @@ export type LlmJsonResult<TContent = unknown> = {
   inputTokens: number;
   outputTokens: number;
   latencyMs: number;
+  finishReason?: string;
 };
 
 export type LlmHarnessResult<TContent> = LlmJsonResult<TContent> & {
@@ -41,6 +43,7 @@ export type LlmTransport = (messages: ChatMessage[]) => Promise<{
   inputTokens: number;
   outputTokens: number;
   latencyMs: number;
+  finishReason?: string;
 }>;
 
 let _transport: LlmTransport | null = null;
@@ -68,6 +71,19 @@ export async function callJsonLlm(messages: ChatMessage[]): Promise<LlmJsonResul
   };
 }
 
+export async function callTextLlm(messages: ChatMessage[]): Promise<LlmJsonResult<string>> {
+  const completion = await requestChatCompletion(messages);
+
+  return {
+    content: completion.rawContent,
+    rawContent: completion.rawContent,
+    inputTokens: completion.inputTokens,
+    outputTokens: completion.outputTokens,
+    latencyMs: completion.latencyMs,
+    finishReason: completion.finishReason,
+  };
+}
+
 export async function callJsonLlmWithSchema<TContent>(
   messages: ChatMessage[],
   schema: z.ZodType<TContent>,
@@ -90,7 +106,12 @@ export async function callJsonLlmWithSchema<TContent>(
 
     const parsed = parseJsonContentSafely(completion.rawContent);
     if (!parsed.ok) {
-      validationErrors.push(parsed.error);
+      let errorMsg = parsed.error;
+      const truncDiag = buildTruncationDiag(completion.rawContent, completion.finishReason, completion.outputTokens);
+      if (truncDiag) {
+        errorMsg = truncDiag + ": " + parsed.error;
+      }
+      validationErrors.push(errorMsg);
       retryMessages = buildHarnessRetryMessages(messages, completion.rawContent, parsed.error, options.label);
       continue;
     }
@@ -174,6 +195,7 @@ async function requestChatCompletion(messages: ChatMessage[]) {
 
       const payload = await response.json() as ChatCompletionResponse;
       const rawContent = payload.choices?.[0]?.message?.content;
+      const finishReason = payload.choices?.[0]?.finish_reason;
 
       if (!rawContent) {
         throw new Error("LLM response did not include message content");
@@ -184,6 +206,7 @@ async function requestChatCompletion(messages: ChatMessage[]) {
         inputTokens: payload.usage?.prompt_tokens ?? 0,
         outputTokens: payload.usage?.completion_tokens ?? 0,
         latencyMs,
+        finishReason,
       };
     } catch (error) {
       clearTimeout(timeoutId);
@@ -209,6 +232,29 @@ async function requestChatCompletion(messages: ChatMessage[]) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 构建截断诊断提示。finishReason="length" 或末尾未闭合 → 返回诊断文本，否则 null。 */
+export function buildTruncationDiag(rawContent: string, finishReason?: string, outputTokens?: number): string | null {
+  const tokensInfo = outputTokens != null ? `outputTokens=${outputTokens}` : "";
+  if (finishReason === "length") {
+    return `模型输出疑似被截断 (finish_reason=length, ${tokensInfo})`;
+  }
+  const trimmed = rawContent.trimEnd();
+  if (/[{\[]\s*$/.test(trimmed) || (trimmed.endsWith(":") && !trimmed.endsWith("::"))) {
+    // 末尾是未闭合的括号/引号/冒号
+    return `JSON 解析失败且末尾未闭合 (可能被截断, ${tokensInfo})`;
+  }
+  // 检查是否以中间状态结束（如逗号后、键名后无值）
+  if (truncatedAtIncompleteSlot(trimmed)) {
+    return `JSON 解析失败，输出可能在字段值中间被截断 (${tokensInfo})`;
+  }
+  return null;
+}
+
+function truncatedAtIncompleteSlot(text: string): boolean {
+  // 末尾是 `"key":` 后面无值，或 `"key": "val` 未闭合引号
+  return /"[^"]*"\s*:\s*$/.test(text) || /"\s*:\s*"[^"]*$/.test(text);
 }
 
 export function parseJsonContent(rawContent: string) {

@@ -33,7 +33,7 @@ export const crossStackAddField: SkillManifest = {
     },
     code_generation: {
       instructionAddon: [
-        "  · 跨栈新增字段 Skill 已激活：准备修改必须覆盖三层。",
+        "  · 跨栈新增字段 Skill 已激活：生成代码必须覆盖三层。",
         "  · 至少包含：1 个数据层任务（migration/model）+ 1 个 API 适配任务 + 1 个前端展示任务。",
         "  · 每个新增字段的跨层一致性检验（字段名/类型/nullable 等）应作为单独校验任务或明确说明。",
         "  · 建议为 migration 回滚路径提供说明。",

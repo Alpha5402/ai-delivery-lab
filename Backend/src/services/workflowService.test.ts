@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setLlmTransport, type LlmTransport } from "./llmClient.js";
 import {
+  addInterventionAndRegenerate,
   confirmStep,
   createWorkflowRun,
   getStepHistory,
@@ -92,7 +93,7 @@ describe("workflowService", () => {
     });
 
     expect(run.activeStepId).toBe("clarification");
-    expect(run.steps).toHaveLength(8);
+    expect(run.steps).toHaveLength(8); // 8 steps with code_review
     expect(run.steps[0].status).toBe("success");
 
     // mock 返回有效输出 → quality gate 判定 need-human（manual 模式）→ waiting-human
@@ -269,6 +270,23 @@ describe("workflowService", () => {
     expect(moduleStep?.status).toBe("idle");
     expect(moduleStep?.output).toBeUndefined();
   });
+
+  it("ordinary (non-repo_write) intervention does not dup feedback", async () => {
+    pushMock(MOCK_CLARIFICATION);
+    const run = await createWorkflowRun({
+      title: "test", rawText: "test", pattern: "frontend-only", targetRepo: "conduit",
+    });
+    await tick(100);
+
+    addInterventionAndRegenerate(run.id, "clarification", "请确认字数统计规则");
+    const updated = getWorkflowRun(run.id)!;
+    const interventions = updated.steps[1].interventions ?? [];
+    // 应有且仅有一条 user role 消息
+    const userMsgs = interventions.filter((m) => m.role === "user");
+    expect(userMsgs.length).toBe(1);
+    expect(userMsgs[0].content).toBe("请确认字数统计规则");
+  });
+
   // ---- 还原快照测试 ----
 
   it("restoreStepSnapshot sets step to waiting-human and resets activeStepId", async () => {
@@ -353,12 +371,11 @@ describe("workflowService", () => {
     expect(restored.steps[3].logs.some((l) => l.includes("因上游步骤还原"))).toBe(true);
 
     // 7. 完全未执行过的下游不应有失效日志
-    expect(restored.steps[4].status).toBe("idle"); // code_generation
-    expect(restored.steps[4].output).toBeUndefined();
-    expect(restored.steps[4].logs.some((l) => l.includes("因上游步骤还原"))).toBe(false);
-    expect(restored.steps[5].logs.some((l) => l.includes("因上游步骤还原"))).toBe(false);
-    expect(restored.steps[6].logs.some((l) => l.includes("因上游步骤还原"))).toBe(false);
-    expect(restored.steps[7].logs.some((l) => l.includes("因上游步骤还原"))).toBe(false);
+    for (let i = 4; i < 7; i++) {
+      expect(restored.steps[i].status).toBe("idle");
+      expect(restored.steps[i].output).toBeUndefined();
+      expect(restored.steps[i].logs.some((l) => l.includes("因上游步骤还原"))).toBe(false);
+    }
   });
 
   it("restoreStepSnapshot does not add fake invalidation logs to never-executed downstream steps", async () => {
@@ -388,10 +405,62 @@ describe("workflowService", () => {
     expect(restored.steps[2].logs.some((l) => l.includes("因上游步骤还原"))).toBe(true);
 
     // 从未执行的下游: 保持干净 idle，无假日志
-    for (let i = 3; i < 8; i++) {
+    for (let i = 3; i < 7; i++) {
       expect(restored.steps[i].status).toBe("idle");
       expect(restored.steps[i].output).toBeUndefined();
       expect(restored.steps[i].logs.filter((l) => l.includes("因上游步骤还原")).length).toBe(0);
     }
+  });
+
+  // ---- Replay 清空 Interventions 测试 ----
+
+  it("replayFromStep clears interventions on replay start and downstream steps", async () => {
+    pushMock(MOCK_CLARIFICATION);
+    const run = await createWorkflowRun({
+      title: "test", rawText: "test", pattern: "frontend-only", targetRepo: "conduit",
+    });
+    await tick(100);
+
+    // 给 replay 起点 (solution_design) 和下游 (module_mapping) 加 interventions
+    const live = getWorkflowRun(run.id)!;
+    live.steps[2].interventions = [{ id: "up-int", stepId: "solution_design", role: "user", content: "upstream decision", createdAt: "" }];
+    live.steps[2].output = { requirementId: "r1" };
+    live.steps[3].interventions = [{ id: "down-int", stepId: "module_mapping", role: "user", content: "downstream note", createdAt: "" }];
+    // 上游 step (clarification) 也设一个 intervention
+    live.steps[1].interventions = [{ id: "past-int", stepId: "clarification", role: "user", content: "past decision", createdAt: "" }];
+
+    const replayed = replayFromStep(run.id, "solution_design");
+
+    // replay 起点 step 和下游的 interventions 应被清空
+    expect(replayed.steps[2].interventions).toEqual([]);
+    expect(replayed.steps[3].interventions).toEqual([]);
+    // 上游 step 的 interventions 应保留
+    expect(replayed.steps[1].interventions).toBeDefined();
+    expect(replayed.steps[1].interventions!.length).toBe(1);
+    // history snapshot 应保留旧 interventions
+    expect(replayed.steps[2].history!.length).toBe(1);
+    expect(replayed.steps[2].history![0].interventions).toBeDefined();
+    expect(replayed.steps[2].history![0].interventions!.length).toBe(1);
+    expect(replayed.activeStepId).toBe("solution_design");
+  });
+
+  it("addInterventionAndRegenerate still preserves new feedback", async () => {
+    pushMock(MOCK_CLARIFICATION);
+    const run = await createWorkflowRun({
+      title: "test", rawText: "test", pattern: "frontend-only", targetRepo: "conduit",
+    });
+    await tick(100);
+    // 先给 clarification 一个 output
+    const live = getWorkflowRun(run.id)!;
+    live.steps[1].output = {
+      summary: "x", questions: [], decisions: [], clarificationComplete: false, confidence: 0.9,
+    };
+    pushMock(MOCK_CLARIFICATION);
+
+    await addInterventionAndRegenerate(run.id, "clarification", "新的反馈");
+    await tick(100);
+    const latest = getWorkflowRun(run.id)!;
+    const interventions = latest.steps[1].interventions ?? [];
+    expect(interventions.some((m) => m.content === "新的反馈")).toBe(true);
   });
 });

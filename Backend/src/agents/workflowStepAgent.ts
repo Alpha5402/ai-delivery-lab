@@ -1,12 +1,19 @@
-import type { z } from "zod";
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { promisify } from "node:util";
+import { z as zod } from "zod";
+import { z } from "zod";
 import { runSimpleAgentRuntime } from "../agentRuntime/simpleAgentRuntime.js";
 import { runRuntimeTool } from "../agentRuntime/toolRegistry.js";
-import { env } from "../config/env.js";
 import { tryGoldenPathCodegen } from "./goldenPathCodegen.js";
 import {
   type CodeGenerationPlan,
+  type CodeReviewResult,
+  codeReviewResultSchema,
   type FileChange,
-  codeGenerationPlanSchema,
+  llmCodeGenerationPlanSchema,
   moduleMappingSchema,
   pullRequestResultSchema,
   type RepoWriteResult,
@@ -19,6 +26,7 @@ import {
   type WorkflowStepId,
   verificationResultSchema,
 } from "../domain/workflow.js";
+import { callJsonLlmWithSchema, callTextLlm } from "../services/llmClient.js";
 import { recordMetric } from "../services/metricsService.js";
 import { getCurrentWorkspace } from "../services/workspaceService.js";
 import { getSkillStepSpec } from "../skills/skillRegistry.js";
@@ -28,6 +36,31 @@ import {
   verificationCommandPolicy,
 } from "../services/stepRouter.js";
 
+const execFileAsync = promisify(execFile);
+const maxDiffBufferBytes = 2 * 1024 * 1024;
+const maxWriterInputChars = 40_000;
+const protectedWriterFilenames = new Set([
+  ".env",
+  ".env.local",
+  ".env.production",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "Cargo.lock",
+  "poetry.lock",
+  "uv.lock",
+]);
+
+type WorkflowStepRunOptions = {
+  pullRequest?: {
+    branch?: string;
+    commitMessage?: string;
+  };
+};
+
+const codeWriterBeginMarker = "<<<AI_DELIVERY_FILE_CONTENT_BEGIN>>>";
+const codeWriterEndMarker = "<<<AI_DELIVERY_FILE_CONTENT_END>>>";
+
 const agentSpecs: Record<Exclude<WorkflowStepId, "requirement_intake" | "clarification" | "solution_design" | "verification">, {
   schema: z.ZodTypeAny;
   instruction: string;
@@ -35,18 +68,23 @@ const agentSpecs: Record<Exclude<WorkflowStepId, "requirement_intake" | "clarifi
 }> = {
   module_mapping: {
     schema: moduleMappingSchema,
-    instruction: "定位需求会影响的真实模块。必须先依据 runtime 中的文件列表和 Agent Guide 判断模块边界，不要只凭技术栈猜测。所列文件路径必须能在 runtime.list_files 结果中找到，否则必须在 reason 中明确标注 “新增” / create / new。",
-    outputContract: "输出 JSON：touchedModules 为模块数组，每项含 name, reason, files；reusableSkill 为可复用 Skill 名称。",
+    instruction: "定位需求会影响的真实模块。必须先依据 runtime 中的文件列表和 Agent Guide 判断模块边界，不要只凭技术栈猜测。所列文件路径必须能在 runtime.list_files 结果中找到，否则必须在 reason 中明确标注 “新增” / create / new。不要编造 Skill；只有当上游已经明确命中预配置 Skill 时，才可输出 reusableSkill。",
+    outputContract: "输出 JSON：touchedModules 为模块数组，每项含 name, reason, files；reusableSkill 为可选字段，只能填写已命中的预配置 Skill 名称。",
   },
   code_generation: {
-    schema: codeGenerationPlanSchema,
-    instruction: "制定小步代码生成计划。每个任务都要指向真实或可合理新增的文件，并说明是否需要测试。绝对不要使用绝对路径或包含 .. 的路径。如果对文件内容有把握，可以同时输出 patches 数组，每项包含 path (相对路径), changeType (created|modified), content (完整文件内容)。patches 是可选的，不确定时不输出。",
-    outputContract: "输出 JSON：strategy 为代码生成策略；tasks 为任务数组，每项含 id, title, files, testRequired, coverLayer(可选)；patches 为可选的文件补丁数组，含 path, changeType, content。",
+    schema: llmCodeGenerationPlanSchema,
+    instruction: "先制定文件级代码交付计划。每个任务必须指向目标文件并说明是否需要测试。testRequired=true 时必须同时填写 testFiles，列出本次生成代码阶段要一并创建或修改的单元测试文件；不要把补测试留给后续阶段。绝对不要使用绝对路径或包含 .. 的路径。计划阶段不要声称已生成真实 diff、已修改文件、已落盘或已补测试；真实写入会由后续受控 writer 基于你的计划逐文件完成。禁止在 JSON 字段里输出大段源码；默认不要输出 patches。只有当片段能帮助审查且不超过 200 字符时，才可在 patches.content 中输出关键行/小片段；该片段仅用于展示，不代表实际文件变更。",
+    outputContract: "输出 JSON：strategy 为代码交付计划摘要；tasks 为任务数组，每项含 id, title, files, testRequired, testFiles(当 testRequired=true 时必填), coverLayer(可选)。patches 可选且仅用于 <=200 字符的展示片段，不是可落盘补丁。",
   },
   repo_write: {
     schema: repoWriteResultSchema,
-    instruction: "生成可审计的仓库写入计划。当前 runtime 默认不会自动写文件，所以必须把 mode 设为 \"planned\"，并把变更放进 pendingChanges；不要声称已经落盘。如果 runtime trace 中包含 write_file/git_checkout_branch 调用并且成功，可以把 mode 设为 \"applied\" 并把变更放进 appliedChanges。",
+    instruction: "Legacy 兼容：生成可审计的仓库写入计划。新 workflow 已并入生成代码阶段。当前 runtime 默认不会自动写文件，所以必须把 mode 设为 \"planned\"，并把变更放进 pendingChanges；不要声称已经落盘。如果 runtime trace 中包含 write_file/git_checkout_branch 调用并且成功，可以把 mode 设为 \"applied\" 并把变更放进 appliedChanges。",
     outputContract: "输出 JSON：branch、mode (planned|applied)、pendingChanges、appliedChanges、diffSummary、filesChanged（向后兼容，可与 pendingChanges 等价）。不要生成 PR 链接。",
+  },
+  code_review: {
+    schema: codeReviewResultSchema,
+    instruction: "审查生成代码的变更。必须基于真实 diff 和 filesChanged 进行审查，不要凭空评价未变更文件。重点：功能正确性 > 安全/副作用 > 测试覆盖 > 可维护性 > 风格。blocker/major findings 必须输出 decision=request-changes。不要输出大段源码，只引用文件路径、行号、摘要和建议。字段名必须严格使用 outputContract，不要使用 path/lines/suggestion/message 等别名。",
+    outputContract: "输出 JSON object：summary:string；decision:\"approve\"|\"request-changes\"；findings:Array<{id:string,severity:\"blocker\"|\"major\"|\"minor\"|\"nit\",title:string,detail:string,file?:string,line?:number,recommendation?:string}>；checklist:Array<{id:string,label:string,status:\"passed\"|\"warning\"|\"failed\"|\"not_applicable\",detail?:string}>；reviewedFiles:string[]；riskAreas:string[]。checklist 不能是字符串数组。",
   },
   pull_request: {
     schema: pullRequestResultSchema,
@@ -55,7 +93,7 @@ const agentSpecs: Record<Exclude<WorkflowStepId, "requirement_intake" | "clarifi
   },
 };
 
-export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: WorkflowRun) {
+export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: WorkflowRun, options?: WorkflowStepRunOptions) {
   if (stepId === "requirement_intake" || stepId === "clarification" || stepId === "solution_design") {
     throw new Error(`Unsupported generic workflow step: ${stepId}`);
   }
@@ -65,7 +103,7 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
     return runVerificationStep(run);
   }
 
-  // repo_write：如果上游 codegen 提供了 patches，真实落盘；否则降级为计划态由 LLM 生成。
+  // Legacy repo_write：旧 run 如果还有该 step，则沿用历史行为。新 run 已并入 code_generation。
   if (stepId === "repo_write") {
     const applied = await tryApplyCodegenPatches(run);
     if (applied) {
@@ -75,7 +113,12 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
 
   // pull_request: 优先真实执行 git 操作 + GitHub API 创建 PR
   if (stepId === "pull_request") {
-    return runPullRequestStep(run);
+    return runPullRequestStep(run, options?.pullRequest);
+  }
+
+  // code_review: 读取真实 diff 内容作为审查上下文
+  if (stepId === "code_review") {
+    return runCodeReviewStep(run);
   }
 
   // golden path: code_generation 对前端计算指标需求输出确定性 patches
@@ -90,14 +133,25 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
         latencyMs: 0,
         estimatedCost: 0,
       });
+      const repoWriteResult = await tryApplyCodegenPatches(run, goldenPlan, { allowOverwrite: true });
+      if (!hasReviewableDiff(repoWriteResult)) {
+        throw new Error("生成代码未产生可审查 diff，已中止。请配置安全写入链路后重试。");
+      }
       return {
         ...goldenPlan,
+        ...(repoWriteResult ?? {}),
+        ...(repoWriteResult ? { repoWriteResult } : {}),
         runtimeTrace: {
           runtime: "golden-path" as const,
           workspaceId: getCurrentWorkspace()?.id ?? "",
           workspaceDir: getCurrentWorkspace()?.workspaceDir,
-          observations: ["Golden path: 前端计算指标 → 确定性 patches"],
-          toolCalls: [],
+          observations: [
+            "Golden path: 前端计算指标 → 确定性 patches",
+            repoWriteResult ? "生成代码阶段已完成真实文件写入" : "生成代码阶段未产生可落盘补丁",
+          ],
+          toolCalls: repoWriteResult?.runtimeTrace && typeof repoWriteResult.runtimeTrace === "object" && "toolCalls" in repoWriteResult.runtimeTrace
+            ? (repoWriteResult.runtimeTrace as { toolCalls?: unknown[] }).toolCalls ?? []
+            : [],
           selectedSkillId: getSkillStepSpec(run, stepId, getCurrentWorkspace() ?? undefined).skillId,
         },
       };
@@ -140,10 +194,23 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
     estimatedCost: 0,
   });
 
+  const output = result.output as CodeGenerationPlan | Record<string, unknown>;
+  const repoWriteResult = stepId === "code_generation"
+    ? await runCodeWriterFromPlan(run, output as CodeGenerationPlan)
+    : null;
+  if (stepId === "code_generation" && !hasReviewableDiff(repoWriteResult)) {
+    throw new Error("生成代码未产生可审查 diff，已中止。请检查 writer 输出或重试当前阶段。");
+  }
+
   return {
-    ...(result.output as Record<string, unknown>),
+    ...(output as Record<string, unknown>),
+    ...(repoWriteResult ?? {}),
+    ...(repoWriteResult ? { repoWriteResult } : {}),
     runtimeTrace: {
       ...result.trace,
+      ...(repoWriteResult?.runtimeTrace && typeof repoWriteResult.runtimeTrace === "object" && "toolCalls" in repoWriteResult.runtimeTrace
+        ? { toolCalls: [...(result.trace.toolCalls ?? []), ...((repoWriteResult.runtimeTrace as { toolCalls?: unknown[] }).toolCalls ?? [])] }
+        : {}),
       selectedSkillId: skillSpec.skillId,
       skillMatchReason: skillSpec.skillMatchReason,
     },
@@ -158,12 +225,19 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
  *
  * 这样 verification 的通过/失败完全是事实来源，LLM 不能把失败说成通过。
  */
+/** 从 code_generation 提取声明的单元测试文件 */
+function getGeneratedTestFiles(run: WorkflowRun): string[] {
+  const codegen = run.steps.find((s) => s.id === "code_generation")?.output as CodeGenerationPlan | undefined;
+  return [...new Set(codegen?.tasks?.flatMap((t) => (t as { testFiles?: string[] }).testFiles ?? []) ?? [])].filter(Boolean);
+}
+
 async function runVerificationStep(run: WorkflowRun) {
   const workspace = getCurrentWorkspace();
   if (!workspace) {
     throw new Error("No workspace is available for verification step.");
   }
 
+  const testFiles = getGeneratedTestFiles(run);
   const detection = await runRuntimeTool(workspace, "detect_workflow_commands");
   const candidates = (detection.output as {
     candidates: Array<{ label: string; available: boolean; argv: string[]; description: string; reason: string }>;
@@ -243,15 +317,19 @@ async function runVerificationStep(run: WorkflowRun) {
     return items[0].status;
   }
 
+  // 无 testFiles：质量门禁默认放行
+  const noTestDeclared = testFiles.length === 0;
   const result: VerificationResult = {
     typecheck: statusFor("typecheck"),
     lint: statusFor("lint"),
-    unitTests: statusFor("unit_tests"),
+    unitTests: noTestDeclared ? "skipped" : statusFor("unit_tests"),
     build: statusFor("build"),
     coverage: null,
     testSuites: [],
     commands: commandResults,
-    diagnosis: buildHeuristicDiagnosis(commandResults),
+    diagnosis: noTestDeclared
+      ? "本次生成代码未声明单元测试文件，质量门禁默认放行。"
+      : buildHeuristicDiagnosis(commandResults),
   };
 
   const parsed = verificationResultSchema.safeParse(result);
@@ -304,22 +382,330 @@ function buildHeuristicDiagnosis(results: VerificationCommandResult[]): string {
   return lines.join("\n");
 }
 
-/**
- * 真实落盘 codegen 输出的 patches:
- *  - 若 codegen 没有 patches,返回 null,让上层走 LLM 计划态;
- *  - 否则: git checkout -b → write_file 每个 patch → 收集 appliedChanges + diffSummary。
- *  - 任意 write_file 失败,直接抛错,让 step 标 failed,不留下"半应用"状态。
- */
-async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResult & { runtimeTrace: unknown }) | null> {
-  const codegenStep = run.steps.find((step) => step.id === "code_generation");
-  const codegenOutput = codegenStep?.output as CodeGenerationPlan | undefined;
-  if (!codegenOutput || !codegenOutput.patches || codegenOutput.patches.length === 0) {
-    return null;
+function hasReviewableDiff(result: (RepoWriteResult & { runtimeTrace: unknown }) | null): result is RepoWriteResult & { runtimeTrace: unknown } {
+  return Boolean(
+    result?.filesChanged?.some((file) => file.contentPreview?.trim() || file.additions > 0 || file.deletions > 0),
+  );
+}
+
+async function runCodeReviewStep(run: WorkflowRun) {
+  const spec = agentSpecs.code_review;
+  const workspace = getCurrentWorkspace();
+  const repoResult = run.steps.find((s) => s.id === "repo_write")?.output as RepoWriteResult | undefined;
+  const codegenPlan = run.steps.find((s) => s.id === "code_generation")?.output as CodeGenerationPlan | undefined;
+
+  // 收集变更文件的真实内容作为审查上下文
+  const diffs: string[] = [];
+  if (repoResult?.appliedChanges?.length) {
+    for (const change of repoResult.appliedChanges) {
+      diffs.push(`--- ${change.path} (${change.changeType}, +${change.additions}/-${change.deletions})`);
+      if (change.contentPreview) diffs.push(change.contentPreview);
+    }
   }
+
+  const result = await runSimpleAgentRuntime("code_review", run, spec.schema, {
+    instruction: spec.instruction,
+    outputContract: spec.outputContract,
+  });
+
+  recordMetric({
+    agent: stepAgents.code_review,
+    calls: 1,
+    inputTokens: result.tokens.inputTokens,
+    outputTokens: result.tokens.outputTokens,
+    latencyMs: result.tokens.latencyMs,
+    estimatedCost: 0,
+  });
+
+  return {
+    ...(result.output as Record<string, unknown>),
+    runtimeTrace: {
+      ...result.trace,
+      observations: [
+        ...result.trace.observations,
+        `审查了 ${repoResult?.appliedChanges?.length ?? 0} 个变更文件`,
+      ],
+    },
+  };
+}
+
+async function runCodeWriterFromPlan(
+  run: WorkflowRun,
+  plan: CodeGenerationPlan,
+): Promise<(RepoWriteResult & { runtimeTrace: unknown }) | null> {
+  const workspace = getCurrentWorkspace();
+  if (!workspace?.workspaceDir) {
+    throw new Error("No workspace is available for code writer.");
+  }
+
+  // 补齐缺失的测试文件路径（testRequired=true 但无 testFiles）
+  const tasksMissingTests = (plan.tasks ?? []).filter(
+    (t) => t.testRequired && getTaskTestFiles(t).length === 0,
+  );
+  if (tasksMissingTests.length > 0) {
+    const derived = await deriveMissingTestFiles(run, tasksMissingTests, workspace);
+    for (const dt of derived) {
+      const task = plan.tasks?.find((t) => t.id === dt.taskId);
+      if (task) (task as Record<string, unknown>).testFiles = dt.testFiles;
+    }
+  }
+
+  const targetFiles = Array.from(new Set(
+    (plan.tasks ?? []).flatMap((task) => [...(task.files ?? []), ...getTaskTestFiles(task)]),
+  )).filter(Boolean);
+  if (targetFiles.length === 0) {
+    throw new Error("生成代码没有提供目标文件，无法写入。");
+  }
+
+  const workspaceRoot = path.resolve(workspace.workspaceDir);
+  const generatedPatches: NonNullable<CodeGenerationPlan["patches"]> = [];
+
+  for (const relativePath of targetFiles) {
+    assertSafeWorkspacePath(workspaceRoot, relativePath);
+    const absolutePath = path.resolve(workspaceRoot, relativePath);
+    const exists = existsSync(absolutePath);
+    const originalContent = exists ? await readFile(absolutePath, "utf-8") : "";
+    if (originalContent.length > maxWriterInputChars) {
+      throw new Error(`生成代码拒绝处理过大的文件: ${relativePath} (${originalContent.length} chars)`);
+    }
+
+    const relatedTasks = (plan.tasks ?? []).filter((task) =>
+      task.files?.includes(relativePath) || getTaskTestFiles(task).includes(relativePath),
+    );
+    const isTestFile = relatedTasks.some((task) => getTaskTestFiles(task).includes(relativePath));
+    const writerMessages = [
+      {
+        role: "system" as const,
+        content: [
+          "你是代码写入器。",
+          "你会收到单个目标文件的当前完整内容和相关任务。",
+          "返回该文件修改后的完整内容，不要输出 Markdown，不要解释。",
+          `输出必须以独立一行 ${codeWriterBeginMarker} 开始，以独立一行 ${codeWriterEndMarker} 结束。`,
+          "边界标记之外不要输出任何字符。",
+          "边界标记中间只能放最终文件内容本身。",
+          "必须保留与任务无关的现有逻辑和样式。",
+          isTestFile
+            ? "当前目标文件是测试文件。必须补齐与相关任务对应的单元测试或组件测试，覆盖关键验收路径和边界场景。"
+            : "当前目标文件是实现文件。若相关任务需要测试，测试会在同一生成代码阶段由对应 testFiles 一并写入。",
+          "如果目标是新增文件，originalContent 为空。",
+          "不要修改 package lock、.env、node_modules 或 .git 内文件。",
+        ].join("\n"),
+      },
+      {
+        role: "user" as const,
+        content: JSON.stringify({
+          runTitle: run.title,
+          workflowContext: buildCodeWriterWorkflowContext(run),
+          strategy: plan.strategy,
+          file: {
+            path: relativePath,
+            exists,
+            role: isTestFile ? "test" : "implementation",
+            originalContent,
+          },
+          tasks: relatedTasks,
+        }),
+      },
+    ];
+
+    const nextContent = await callCodeWriterText(writerMessages, relativePath);
+    if (nextContent === originalContent) {
+      // 单文件 no-op 不立即失败——跳过该文件，继续处理其他 target
+      generatedPatches.push({
+        path: relativePath,
+        changeType: exists ? "modified" : "created",
+        content: nextContent,
+        skipped: true,
+        skipReason: "writer 输出与原文件一致，已跳过",
+      });
+      continue;
+    }
+
+    generatedPatches.push({
+      path: relativePath,
+      changeType: exists ? "modified" : "created",
+      content: nextContent,
+    });
+  }
+
+    // 过滤掉 skipped patches，只 apply 真实变更
+    const realPatches = generatedPatches.filter((p) => !(p as Record<string, unknown>).skipped);
+    const skippedCount = generatedPatches.length - realPatches.length;
+
+    if (realPatches.length === 0) {
+      throw new Error(`生成代码未产生可审查 diff，已中止。所有 ${generatedPatches.length} 个目标文件均未改变。`);
+    }
+
+    const applied = await tryApplyCodegenPatches(run, {
+      ...plan,
+      patches: realPatches,
+    }, { allowOverwrite: true });
+
+    if (applied && skippedCount > 0) {
+      (applied.runtimeTrace as Record<string, unknown>).observations = [
+        ...((applied.runtimeTrace as Record<string, unknown>).observations as string[] ?? []),
+        `${skippedCount} 个文件 writer 输出与原文件一致，已跳过`,
+      ];
+    }
+
+    return applied;
+  }
+
+
+const testFileDerivationSchema = zod.object({
+  testTargets: zod.array(zod.object({
+    taskId: zod.string().min(1),
+    testFiles: zod.array(zod.string().min(1)).min(1),
+    reason: zod.string().min(1),
+  })).min(1),
+});
+
+async function deriveMissingTestFiles(
+  run: WorkflowRun,
+  tasks: CodeGenerationPlan["tasks"],
+  workspace: NonNullable<ReturnType<typeof getCurrentWorkspace>>,
+): Promise<Array<{ taskId: string; testFiles: string[]; reason: string }>> {
+  const fileTree = workspace.repositoryScan?.fileTree ?? [];
+  const testPatterns = fileTree.filter((f) => /test|spec|__tests__/.test(f)).slice(0, 10);
+  try {
+    const result = await callJsonLlmWithSchema([
+      {
+        role: "system",
+        content: [
+          "你是测试文件路径推导器。",
+          "根据任务标题、实现文件路径、项目文件树、现有测试目录风格，推导最合理的测试文件路径。",
+          "如果已有相邻测试文件，优先复用或修改已有测试文件。",
+          "如果没有测试文件，按项目约定新增，例如：",
+          "  src/utils/foo.ts → src/utils/__tests__/foo.test.ts",
+          "  backend/models/Comment.js → backend/models/__tests__/Comment.test.js",
+          "禁止绝对路径和 ..。不要输出源码，只输出 JSON。",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          tasks: tasks.map((t) => ({ id: t.id, title: t.title, files: t.files, testRequired: t.testRequired })),
+          fileTree: fileTree.slice(0, 30),
+          existingTestPatterns: testPatterns,
+        }),
+      },
+    ], testFileDerivationSchema, { label: "Test File Deriver" });
+
+    return result.content.testTargets.map((t) => ({
+      taskId: t.taskId,
+      testFiles: t.testFiles,
+      reason: t.reason,
+    }));
+  } catch {
+    // LLM 推导失败时返回空——最终还是会在 apply 阶段因缺 testFiles 而 failed
+    return [];
+  }
+}
+
+async function callCodeWriterText(
+  messages: Parameters<typeof callTextLlm>[0],
+  relativePath: string,
+) {
+  const maxAttempts = 2;
+  let retryMessages = messages;
+  let lastRawContent = "";
+  let lastError = "";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const writer = await callTextLlm(retryMessages);
+    lastRawContent = writer.rawContent;
+
+    try {
+      return extractCodeWriterContent(writer.rawContent, relativePath);
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "代码写入未按协议返回文件内容";
+      retryMessages = [
+        ...messages,
+        { role: "assistant", content: writer.rawContent },
+        {
+          role: "user",
+          content: [
+            lastError,
+            `请重新输出 ${relativePath} 的完整文件内容。`,
+            `必须以独立一行 ${codeWriterBeginMarker} 开始，以独立一行 ${codeWriterEndMarker} 结束。`,
+            "不要输出 Markdown 代码块、JSON、解释或边界标记之外的任何字符。",
+          ].join("\n"),
+        },
+      ];
+    }
+  }
+
+  throw new Error([
+    `代码写入:${relativePath} returned invalid file content after ${maxAttempts} attempt(s).`,
+    lastError,
+    `Last raw response: ${lastRawContent}`,
+  ].join("\n"));
+}
+
+function buildCodeWriterWorkflowContext(run: WorkflowRun) {
+  const pickStep = (id: WorkflowStepId) => run.steps.find((step) => step.id === id)?.output;
+  return {
+    requirement: pickStep("requirement_intake"),
+    clarification: pickStep("clarification"),
+    solution: pickStep("solution_design"),
+    moduleMapping: pickStep("module_mapping"),
+  };
+}
+
+function getTaskTestFiles(task: CodeGenerationPlan["tasks"][number]) {
+  return (task as { testFiles?: string[] }).testFiles ?? [];
+}
+
+function extractCodeWriterContent(rawContent: string, relativePath: string) {
+  const beginIndex = rawContent.indexOf(codeWriterBeginMarker);
+  const endIndex = rawContent.lastIndexOf(codeWriterEndMarker);
+  if (beginIndex === -1 || endIndex === -1 || endIndex <= beginIndex) {
+    throw new Error(`代码写入未按协议返回文件内容: ${relativePath}`);
+  }
+
+  const contentStart = beginIndex + codeWriterBeginMarker.length;
+  let content = rawContent.slice(contentStart, endIndex);
+  if (content.startsWith("\r\n")) content = content.slice(2);
+  else if (content.startsWith("\n")) content = content.slice(1);
+  if (content.endsWith("\r\n")) content = content.slice(0, -2);
+  else if (content.endsWith("\n")) content = content.slice(0, -1);
+  return content;
+}
+
+function assertSafeWorkspacePath(workspaceRoot: string, relativePath: string) {
+  if (!relativePath || path.isAbsolute(relativePath) || relativePath.includes("..")) {
+    throw new Error(`Unsafe code writer path: ${relativePath}`);
+  }
+  const segments = relativePath.split(/[\\/]/);
+  if (segments.some((seg) => seg === ".git" || seg === "node_modules")) {
+    throw new Error(`Refusing to write inside ${segments.join("/")}`);
+  }
+  const filename = segments[segments.length - 1];
+  if (protectedWriterFilenames.has(filename)) {
+    throw new Error(`Refusing to write protected file: ${filename}`);
+  }
+  const absolutePath = path.resolve(workspaceRoot, relativePath);
+  if (!absolutePath.startsWith(`${workspaceRoot}${path.sep}`)) {
+    throw new Error(`Code writer escaped workspace: ${relativePath}`);
+  }
+}
+
+/**
+ * 落盘 codegen patches：只有确定性 golden path 或受控 writer 产出的完整文件内容
+ * 才会以 allowOverwrite=true 调用。计划阶段 LLM 输出的短 patches 片段不能直接落盘。
+ */
+async function tryApplyCodegenPatches(
+  run: WorkflowRun,
+  codegenOutputOverride?: CodeGenerationPlan,
+  opts?: { allowOverwrite?: boolean },
+): Promise<(RepoWriteResult & { runtimeTrace: unknown }) | null> {
+  const codegenOutput = codegenOutputOverride;
+  if (!codegenOutput || !codegenOutput.patches || codegenOutput.patches.length === 0) return null;
+  if (!opts?.allowOverwrite) return null;
 
   const workspace = getCurrentWorkspace();
   if (!workspace) {
-    throw new Error("No workspace is available for repo_write step.");
+    throw new Error("No workspace is available for code_generation step.");
   }
 
   // 分支命名约定：feat/<runId 短前缀>
@@ -348,12 +734,15 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
     if (!wResult.written) {
       throw new Error(`write_file failed for ${patch.path}: ${wResult.reason ?? "unknown"}`);
     }
+    const diffPreview = workspace.hasRepository
+      ? await getUnifiedDiffPreview(workspace.workspaceDir, patch.path, patch.content, patch.changeType)
+      : synthesizeCreatedFileDiff(patch.path, patch.content);
     appliedChanges.push({
       path: patch.path,
       changeType: patch.changeType,
-      additions: patch.content.split(/\r?\n/).length,
-      deletions: 0,
-      contentPreview: patch.content.slice(0, 1_000),
+      additions: countDiffLines(diffPreview, "added") || patch.content.split(/\r?\n/).length,
+      deletions: countDiffLines(diffPreview, "deleted"),
+      contentPreview: diffPreview,
     });
   }
 
@@ -381,7 +770,7 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
   }
 
   recordMetric({
-    agent: stepAgents.repo_write,
+    agent: stepAgents.code_generation,
     calls: 1,
     inputTokens: 0,
     outputTokens: 0,
@@ -389,7 +778,7 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
     estimatedCost: 0,
   });
 
-  const skillSpecForWrite = getSkillStepSpec(run, "repo_write", getCurrentWorkspace() ?? undefined);
+  const skillSpecForWrite = getSkillStepSpec(run, "code_generation", getCurrentWorkspace() ?? undefined);
 
   return {
     ...parsed.data,
@@ -398,7 +787,7 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
       workspaceId: workspace.id,
       workspaceDir: workspace.workspaceDir,
       observations: [
-        `repo_write 真实写入 ${appliedChanges.length} 个文件到分支 ${branchName}`,
+        `生成代码阶段真实写入 ${appliedChanges.length} 个文件到分支 ${branchName}`,
       ],
       toolCalls: toolTraces,
       selectedSkillId: skillSpecForWrite.skillId,
@@ -407,17 +796,99 @@ async function tryApplyCodegenPatches(run: WorkflowRun): Promise<(RepoWriteResul
   };
 }
 
+async function getUnifiedDiffPreview(
+  workspaceDir: string | undefined,
+  relativePath: string,
+  content: string,
+  changeType: "created" | "modified",
+) {
+  if (!workspaceDir || !relativePath || relativePath.includes("..") || relativePath.startsWith("/")) {
+    return synthesizeCreatedFileDiff(relativePath, content);
+  }
+
+  try {
+    const { stdout } = await execFileAsync("git", ["diff", "--unified=5", "--", relativePath], {
+      cwd: workspaceDir,
+      timeout: 10_000,
+      maxBuffer: maxDiffBufferBytes,
+    });
+    if (stdout.trim()) return stdout;
+  } catch {
+    // Fall through to a synthetic preview. The write result should remain reviewable.
+  }
+
+  if (changeType === "created") {
+    return synthesizeCreatedFileDiff(relativePath, content);
+  }
+
+  return synthesizeModifiedFilePreview(relativePath, content);
+}
+
+function synthesizeCreatedFileDiff(relativePath: string, content: string) {
+  const lines = content.split(/\r?\n/);
+  const hunkSize = lines.length;
+  return [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    "new file mode 100644",
+    "index 0000000..0000000",
+    "--- /dev/null",
+    `+++ b/${relativePath}`,
+    `@@ -0,0 +1,${hunkSize} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join("\n");
+}
+
+function synthesizeModifiedFilePreview(relativePath: string, content: string) {
+  const lines = content.split(/\r?\n/);
+  return [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    `--- a/${relativePath}`,
+    `+++ b/${relativePath}`,
+    `@@ -1,${lines.length} +1,${lines.length} @@`,
+    ...lines.map((line) => ` ${line}`),
+  ].join("\n");
+}
+
+function countDiffLines(diff: string, type: "added" | "deleted") {
+  const prefix = type === "added" ? "+" : "-";
+  const header = type === "added" ? "+++" : "---";
+  return diff.split(/\r?\n/).filter((line) => line.startsWith(prefix) && !line.startsWith(header)).length;
+}
+
 // ---- Pull Request Step: 真实 git 操作 + GitHub API ----
 
-async function runPullRequestStep(run: WorkflowRun): Promise<Record<string, unknown> & { runtimeTrace: unknown }> {
+async function runPullRequestStep(
+  run: WorkflowRun,
+  options?: { branch?: string; commitMessage?: string },
+): Promise<Record<string, unknown> & { runtimeTrace: unknown }> {
   const workspace = getCurrentWorkspace();
   if (!workspace) {
     throw new Error("No workspace is available for pull_request step.");
   }
 
+  // Phase 1: generate AI draft → return waiting-human
+  if (!options?.branch && !options?.commitMessage) {
+    const title = buildPrTitle(run);
+    const branch = deriveBranchName(run);
+    return buildPrResult({
+      run, title, url: "pending://pull-request", status: "draft",
+      checklist: ["AI 已生成 PR draft，请确认分支名和 commit message 后点击继续"],
+      branch, commitMessage: title, toolTraces: [],
+    });
+  }
+
+  // Phase 2: user confirmed (options set) OR regenerate with prior draft values
+  const draft = run.steps.find((s) => s.id === "pull_request")?.output as
+    | { branch?: string; commitMessage?: string }
+    | undefined;
+  const branch = options?.branch ?? draft?.branch ?? deriveBranchName(run);
+  const commitMessage = options?.commitMessage ?? draft?.commitMessage ?? buildPrTitle(run);
+
+  // Phase 2: user confirmed → execute git operations
   const toolTraces: Array<Awaited<ReturnType<typeof runRuntimeTool>>> = [];
   const checklist: string[] = [];
   const title = buildPrTitle(run);
+  let commitSha: string | undefined;
 
   // 1. 检查是否是 git 仓库
   if (!workspace.hasRepository) {
@@ -437,39 +908,50 @@ async function runPullRequestStep(run: WorkflowRun): Promise<Record<string, unkn
   }
 
   // 3. 创建/切换分支
-  const branchName = deriveBranchName(run);
-  const branchResult = await runRuntimeTool(workspace, "git_create_branch", { branch: branchName });
+  const requestedBranchName = branch;
+  const branchResult = await runRuntimeTool(workspace, "git_create_branch", { branch: requestedBranchName });
   toolTraces.push(branchResult);
-  const branchOut = branchResult.output as { ok?: boolean; branch?: string; reason?: string };
+  const branchOut = branchResult.output as { ok?: boolean; branch?: string; reused?: boolean; reason?: string };
   if (!branchOut.ok) {
     return buildPrResult({
       run, title, url: "pending://pull-request", status: "draft",
       checklist: [...checklist, `创建分支失败: ${branchOut.reason}`], toolTraces,
     });
   }
+  const branchName = branchOut.branch ?? requestedBranchName;
   checklist.push(`分支: ${branchOut.branch}`);
 
   // 4. 提交变更
-  const commitResult = await runRuntimeTool(workspace, "git_commit_changes", { message: title });
+  const commitResult = await runRuntimeTool(workspace, "git_commit_changes", { message: commitMessage });
   toolTraces.push(commitResult);
   const commitOut = commitResult.output as { ok?: boolean; committed?: boolean; reason?: string; filesChanged?: number };
   if (commitOut.committed) {
     checklist.push(`已提交 ${commitOut.filesChanged} 个文件`);
+    checklist.push(`Commit: ${commitMessage}`);
+    // 尝试获取 commit SHA
+    try {
+      const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace.workspaceDir, timeout: 5_000 });
+      commitSha = stdout.trim();
+    } catch { /* sha 获取失败不阻断 */ }
   } else {
     checklist.push(commitOut.reason ?? "没有可提交的变更");
   }
 
   // 5. Push
-  const pushResult = await runRuntimeTool(workspace, "git_push_branch", { branch: branchName });
-  toolTraces.push(pushResult);
-  const pushOut = pushResult.output as { ok?: boolean; reason?: string };
+  let pushOut: { ok?: boolean; reason?: string } = { ok: false, reason: "没有新提交，跳过 push" };
+  const shouldPush = commitOut.committed || branchOut.reused;
+  if (shouldPush) {
+    const pushResult = await runRuntimeTool(workspace, "git_push_branch", { branch: branchName });
+    toolTraces.push(pushResult);
+    pushOut = pushResult.output as { ok?: boolean; reason?: string };
+  }
 
   // 6. 创建 GitHub PR
   let prOut: Record<string, unknown> = {};
-  if (commitOut.committed) {
+  if (shouldPush && pushOut.ok) {
     const prBody = buildPrBody(run);
     const prResult = await runRuntimeTool(workspace, "github_create_pr", {
-      title, body: prBody, head: branchName, base: env.GITHUB_BASE_BRANCH,
+      title, body: prBody, head: branchName,
     });
     toolTraces.push(prResult);
     prOut = prResult.output as Record<string, unknown>;
@@ -496,7 +978,7 @@ async function runPullRequestStep(run: WorkflowRun): Promise<Record<string, unkn
   return buildPrResult({
     run, title, url: prUrl,
     status: prOk ? "ready" : "draft",
-    checklist, branch: branchName, prNumber, pushed: pushOut.ok === true, toolTraces,
+    checklist, branch: branchName, commitMessage, commitSha, prNumber, pushed: pushOut.ok === true, toolTraces,
   });
 }
 
@@ -511,7 +993,10 @@ function buildPrBody(run: WorkflowRun): string {
   const clarification = run.steps.find((s) => s.id === "clarification")?.output as Record<string, unknown> | undefined;
   const solution = run.steps.find((s) => s.id === "solution_design")?.output as Record<string, unknown> | undefined;
   const verification = run.steps.find((s) => s.id === "verification")?.output as Record<string, unknown> | undefined;
-  const repoWrite = run.steps.find((s) => s.id === "repo_write")?.output as Record<string, unknown> | undefined;
+  const codeGeneration = run.steps.find((s) => s.id === "code_generation")?.output as Record<string, unknown> | undefined;
+  const repoWrite = (codeGeneration?.repoWriteResult as Record<string, unknown> | undefined)
+    ?? (codeGeneration && "filesChanged" in codeGeneration ? codeGeneration : undefined)
+    ?? (run.steps.find((s) => s.id === "repo_write")?.output as Record<string, unknown> | undefined);
 
   if (requirement?.rawText) sections.push(`## Requirement\n${requirement.rawText}`);
   if (clarification) {
@@ -534,11 +1019,14 @@ function buildPrBody(run: WorkflowRun): string {
 }
 
 function deriveBranchName(run: WorkflowRun): string {
-  const slug = (run.title || "workflow")
-    .replace(/[^A-Za-z0-9一-鿿\s_-]/g, "")
-    .replace(/\s+/g, "-").toLowerCase().slice(0, 30);
-  const shortId = run.id.replace(/[^A-Za-z0-9]/g, "").slice(0, 8);
-  return `feature/${shortId}-${slug}`;
+  const slug = (run.title || "feature")
+    .replace(/[^A-Za-z0-9\s_-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .toLowerCase()
+    .slice(0, 40)
+    .replace(/^-|-$/g, "");
+  return `feature/${slug}`;
 }
 
 function buildPrResult(opts: {
@@ -548,6 +1036,8 @@ function buildPrResult(opts: {
   status: "draft" | "ready";
   checklist: string[];
   branch?: string;
+  commitMessage?: string;
+  commitSha?: string;
   prNumber?: number;
   pushed?: boolean;
   toolTraces: Array<Awaited<ReturnType<typeof runRuntimeTool>>>;
@@ -567,6 +1057,8 @@ function buildPrResult(opts: {
     status: opts.status,
     checklist: opts.checklist,
     branch: opts.branch,
+    commitMessage: opts.commitMessage,
+    commitSha: opts.commitSha,
     prNumber: opts.prNumber,
     pushed: opts.pushed,
     runtimeTrace: {
