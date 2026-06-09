@@ -171,6 +171,39 @@ describe("stepVerifiers", () => {
       const result = verifyCodeGenerationPlan(output, makeWorkspace());
       expect(result.checks.some((c) => c.type === "security" && c.status === "failed")).toBe(true);
     });
+
+    it("fails when ordinary tasks target frontend entry files without justification", () => {
+      const output: CodeGenerationPlan = {
+        strategy: "incremental",
+        tasks: [
+          { id: "t1", title: "重构 AuthContext 登录态核心实现", files: ["frontend/src/main.jsx"], testRequired: true, testFiles: ["frontend/src/context/AuthContext.test.jsx"] },
+        ],
+      };
+      const result = verifyCodeGenerationPlan(output, makeWorkspace({
+        repositoryScan: {
+          ...makeWorkspace().repositoryScan,
+          fileTree: ["frontend/src/main.jsx", "frontend/src/context/AuthContext.test.jsx"],
+        },
+      }));
+      expect(result.checks.find((c) => c.id === "code_generation.unjustified_entrypoint_files")?.status).toBe("failed");
+      expect(result.qualityGate.decision).toBe("repair");
+    });
+
+    it("allows frontend entry files when the task explicitly changes root mounting", () => {
+      const output: CodeGenerationPlan = {
+        strategy: "incremental",
+        tasks: [
+          { id: "t1", title: "在入口挂载 AuthProvider 和 Router", files: ["frontend/src/main.jsx"], testRequired: false },
+        ],
+      };
+      const result = verifyCodeGenerationPlan(output, makeWorkspace({
+        repositoryScan: {
+          ...makeWorkspace().repositoryScan,
+          fileTree: ["frontend/src/main.jsx"],
+        },
+      }));
+      expect(result.checks.some((c) => c.id === "code_generation.unjustified_entrypoint_files")).toBe(false);
+    });
   });
 
   describe("verifyRepoWrite", () => {

@@ -20,7 +20,7 @@ templateRoutes.get("/", (_req, res) => {
   res.json(templates);
 });
 
-/** 获取默认 template（8 步 default-software-delivery） */
+/** 获取默认 template（7 步 default-software-delivery） */
 templateRoutes.get("/default", (_req, res) => {
   const t = getDefaultWorkflowTemplate();
   res.json(t);

@@ -1,6 +1,34 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { buildHarnessRetryMessages, formatZodError, parseJsonContent } from "./llmClient.js";
+import { buildHarnessRetryMessages, buildTruncationDiag, formatZodError, parseJsonContent } from "./llmClient.js";
+
+describe("buildTruncationDiag", () => {
+  it("detects finish_reason=length", () => {
+    const diag = buildTruncationDiag('{"key":', "length", 1000);
+    expect(diag).toContain("finish_reason=length");
+    expect(diag).toContain("outputTokens=1000");
+  });
+
+  it("detects open array bracket", () => {
+    const diag = buildTruncationDiag('{"tasks": [', undefined, 200);
+    expect(diag).toContain("末尾未闭合");
+  });
+
+  it("returns null for complete truncated JSON", () => {
+    const diag = buildTruncationDiag('{"strategy": "do X", "tasks": [{"id": "1"}]}', undefined, 200);
+    expect(diag).toBeNull();
+  });
+
+  it("returns null for valid-looking json", () => {
+    const diag = buildTruncationDiag('{"strategy": "ok", "tasks": []}', undefined, 100);
+    expect(diag).toBeNull();
+  });
+
+  it("returns null for complete content", () => {
+    const diag = buildTruncationDiag('  ```json\n{"valid": true}\n```  ');
+    expect(diag).toBeNull();
+  });
+});
 
 describe("parseJsonContent", () => {
   it("parses a plain JSON object", () => {

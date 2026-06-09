@@ -33,7 +33,7 @@ export const backendAddPagination: SkillManifest = {
     },
     code_generation: {
       instructionAddon: [
-        "  · 后端分页与搜索 Skill 已激活：代码计划需区分以下任务。",
+        "  · 后端分页与搜索 Skill 已激活：生成代码需区分以下任务。",
         "  · 参数校验：page/pageSize/sort/order/filters 的 DTO schema",
         "  · 数据查询：带 LIMIT/OFFSET 的 SQL 或 ORM 查询，含 WHERE 过滤 + ORDER BY 排序",
         "  · 响应封装：统一的分页响应结构 { data, pagination: { page, pageSize, total, totalPages } }",

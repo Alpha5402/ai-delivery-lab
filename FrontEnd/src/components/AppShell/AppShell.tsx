@@ -29,7 +29,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       key: "home",
       title: (
         <Link to="/dashboard" className="app-shell__brand">
-          Conduit Delivery Lab
+          AI Delivery Workspace
         </Link>
       ),
     },

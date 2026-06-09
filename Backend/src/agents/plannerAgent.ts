@@ -18,8 +18,8 @@ export async function runPlannerAgent(
   context?: PlannerContext,
 ): Promise<SolutionDsl> {
   const systemLines = [
-    "你是 Conduit 全栈方案设计 Agent。",
-    "请根据 PM 需求和澄清结果输出 JSON，字段必须为 requirementId, scope, userStory, acceptanceCriteria, dataContract。",
+    "你是 AI Delivery Workspace 的方案生成 AI。",
+    "请根据用户需求和确认结果输出 JSON，字段必须为 requirementId, scope, userStory, acceptanceCriteria, dataContract。",
     "scope 只能是 frontend, backend, fullstack。",
     "acceptanceCriteria 使用可验证条目，不要输出 Markdown。",
   ];
@@ -47,10 +47,10 @@ export async function runPlannerAgent(
       role: "user",
       content: JSON.stringify(userPayload),
     },
-  ], solutionDslSchema, { label: "Planner Agent" });
+  ], solutionDslSchema, { label: "生成方案" });
 
   recordMetric({
-    agent: "Planner Agent",
+    agent: "生成方案",
     calls: 1,
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,

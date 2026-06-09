@@ -27,14 +27,15 @@ export function buildRuntimeMemoryContext(
   run: WorkflowRun,
   currentStepId: WorkflowStepId,
 ): RuntimeMemoryContext {
-  const currentIndex = stepOrder.indexOf(currentStepId);
+  const stepIdOrder = run.steps.map((s) => s.id);
+  const currentIndex = stepIdOrder.indexOf(currentStepId);
 
   const currentStepMemory: RuntimeMemoryEntry[] = [];
   const upstreamMemory: RuntimeMemoryEntry[] = [];
   const allUserDecisions: RuntimeMemoryEntry[] = [];
 
   for (const step of run.steps) {
-    const stepIndex = stepOrder.indexOf(step.id);
+    const stepIndex = stepIdOrder.indexOf(step.id);
     if (!step.interventions) continue;
 
     for (const m of step.interventions) {

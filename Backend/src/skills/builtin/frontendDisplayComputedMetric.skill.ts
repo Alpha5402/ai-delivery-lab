@@ -33,7 +33,7 @@ export const frontendDisplayComputedMetric: SkillManifest = {
     },
     code_generation: {
       instructionAddon: [
-        "  · 前端计算指标展示 Skill 已激活：代码计划需区分三类任务。",
+        "  · 前端计算指标展示 Skill 已激活：生成代码需区分三类任务。",
         "  · UI 渲染：组件展示指标值 + 加载/空/错误状态",
         "  · 纯逻辑：计算函数（字数、阅读时长等），要求纯函数且可测试",
         "  · 边界：空字符串、超长文本、特殊字符（Markdown 标记/HTML 标签）的处理",

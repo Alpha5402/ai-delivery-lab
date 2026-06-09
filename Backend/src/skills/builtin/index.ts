@@ -2,6 +2,7 @@ import { registerSkill } from "../skillRegistry.js";
 import { backendAddPagination } from "./backendAddPagination.skill.js";
 import { crossStackAddField } from "./crossStackAddField.skill.js";
 import { frontendDisplayComputedMetric } from "./frontendDisplayComputedMetric.skill.js";
+import { generalCodeReview } from "./generalCodeReview.skill.js";
 
 /**
  * 启动时调用一次，注册所有内置 Skill。
@@ -11,4 +12,5 @@ export function registerBuiltinSkills(): void {
   registerSkill(backendAddPagination);
   registerSkill(crossStackAddField);
   registerSkill(frontendDisplayComputedMetric);
+  registerSkill(generalCodeReview);
 }

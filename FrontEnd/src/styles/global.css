@@ -233,6 +233,16 @@ textarea:focus-visible {
   gap: 14px;
 }
 
+.step-summary--running {
+  padding: 12px 0;
+}
+
+.step-summary--running p {
+  color: var(--color-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
 .step-summary__card {
   background: var(--color-surface-muted);
   border: 1px solid var(--color-border);

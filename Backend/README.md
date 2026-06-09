@@ -78,9 +78,8 @@ The backend mirrors the frontend contract:
 3. `solution_design`
 4. `module_mapping`
 5. `code_generation`
-6. `repo_write`
-7. `verification`
-8. `pull_request`
+6. `verification`
+7. `pull_request`
 
 Current persistence is in-memory, which is enough for local frontend integration. The next natural upgrade is event-sourced persistence for pause, edit, and replay history.
 

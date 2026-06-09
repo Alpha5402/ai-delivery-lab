@@ -17,6 +17,17 @@ export type {
   StepRunSnapshot,
 } from "@backend/domain/workflow";
 
+import type {
+  RequirementDraft,
+  ClarificationOutput,
+  SolutionDsl,
+  ModuleMapping,
+  CodeGenerationPlan,
+  RepoWriteResult,
+  VerificationResult,
+  PullRequestResult,
+} from "@backend/domain/workflow";
+
 // Frontend-only convenience types
 
 export type RequirementPattern = "frontend-only" | "cross-stack" | "interaction" | "unclear";

@@ -41,7 +41,7 @@ export function runRegisteredStepVerifier(
 }
 
 /**
- * 注册 default 8 步 verifier。
+ * 注册 default 7 步 verifier。
  * 必须在 app 启动时调用一次。
  */
 export function registerDefaultStepVerifiers(
@@ -77,15 +77,18 @@ export function registerDefaultStepVerifiers(
     module_mapping: withWorkspaceFallback("module_mapping", impl.verifyModuleMapping),
     code_generation: withWorkspaceFallback("code_generation", impl.verifyCodeGenerationPlan),
     repo_write: withWorkspaceFallback("repo_write", impl.verifyRepoWrite),
+    code_review: trivialFor("code_review"),
     verification: direct(impl.verifyVerification),
     pull_request: trivialFor("pull_request"),
   };
 
   for (const stepId of stepOrder) {
+    const verify = registry[stepId];
+    if (!verify) continue; // 跳过未在 registry 中定义的 step
     registerStepVerifier({
       stepId,
       verifierProfileId: `${stepId}-verifier`,
-      verify: registry[stepId],
+      verify,
     });
   }
 }

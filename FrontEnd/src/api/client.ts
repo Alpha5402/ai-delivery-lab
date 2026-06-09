@@ -30,7 +30,7 @@ export function getWorkflowRun(runId: string) {
   return request<WorkflowRun>(`/workflows/${runId}`);
 }
 
-export function createWorkflowRun(requirement: RequirementDraft) {
+export function createWorkflowRun(requirement: Omit<RequirementDraft, "title"> & { title?: string; projectId?: string; workspaceId?: string }) {
   return request<WorkflowRun>("/workflows", {
     method: "POST",
     body: JSON.stringify(requirement),
@@ -43,9 +43,17 @@ export function deleteWorkflowRun(runId: string) {
   });
 }
 
-export function runWorkflowStep(runId: string, stepId: WorkflowStepId) {
+export type WorkflowStepRunOptions = {
+  pullRequest?: {
+    branch?: string;
+    commitMessage?: string;
+  };
+};
+
+export function runWorkflowStep(runId: string, stepId: WorkflowStepId, options?: WorkflowStepRunOptions) {
   return request<WorkflowRun>(`/workflows/${runId}/steps/${stepId}/run`, {
     method: "POST",
+    body: options ? JSON.stringify(options) : undefined,
   });
 }
 
@@ -100,13 +108,39 @@ export type WorkflowStepExecutionMode = "automatic" | "manual-confirmation";
 
 export type WorkflowSettings = {
   stepExecutionModes: Record<WorkflowStepId, WorkflowStepExecutionMode>;
+  git: {
+    userName?: string;
+    userEmail?: string;
+    githubTokenConfigured: boolean;
+    githubTokenSource: "settings" | "env" | "none";
+    githubOwner?: string;
+    githubRepo?: string;
+    githubBaseBranch: string;
+    githubRemote: string;
+  };
+  enabledOptionalSteps: { code_review: boolean };
+};
+
+export type WorkflowSettingsPatch = {
+  stepExecutionModes?: Record<WorkflowStepId, WorkflowStepExecutionMode>;
+  enabledOptionalSteps?: { code_review?: boolean };
+  git?: {
+    userName?: string;
+    userEmail?: string;
+    githubToken?: string;
+    clearGithubToken?: boolean;
+    githubOwner?: string;
+    githubRepo?: string;
+    githubBaseBranch?: string;
+    githubRemote?: string;
+  };
 };
 
 export function fetchWorkflowSettings() {
   return request<WorkflowSettings>("/workflows/settings");
 }
 
-export function updateWorkflowSettings(patch: Partial<WorkflowSettings>) {
+export function updateWorkflowSettings(patch: WorkflowSettingsPatch) {
   return request<WorkflowSettings>("/workflows/settings", {
     method: "PATCH",
     body: JSON.stringify(patch),
@@ -124,7 +158,8 @@ export type WorkflowStreamEvent =
       phase: "started" | "completed" | "failed" | "waiting-human";
       message?: string;
     }
-  | { type: "settings"; settings: WorkflowSettings };
+  | { type: "settings"; settings: WorkflowSettings }
+  | { type: "metrics"; metrics: AgentMetric[] };
 
 /**
  * 订阅 workflow run 的 SSE 流，支持指数退避自动重连。
@@ -136,6 +171,7 @@ export function subscribeWorkflowRun(
     onUpdate?: (run: WorkflowRun) => void;
     onStepEvent?: (event: Extract<WorkflowStreamEvent, { type: "step" }>) => void;
     onSettingsChanged?: (settings: WorkflowSettings) => void;
+    onMetrics?: (metrics: AgentMetric[]) => void;
     onError?: (error: unknown) => void;
     onReconnect?: (attempt: number) => void;
   },
@@ -180,6 +216,16 @@ export function subscribeWorkflowRun(
       try {
         const payload = JSON.parse((raw as MessageEvent).data) as { settings: WorkflowSettings };
         handlers.onSettingsChanged?.(payload.settings);
+      } catch (error) {
+        handlers.onError?.(error);
+      }
+    });
+
+    source.addEventListener("metrics", (raw) => {
+      retryCount = 0;
+      try {
+        const payload = JSON.parse((raw as MessageEvent).data) as { metrics: AgentMetric[] };
+        handlers.onMetrics?.(payload.metrics);
       } catch (error) {
         handlers.onError?.(error);
       }

@@ -155,8 +155,9 @@ export class WorkspaceStore {
       .run(new Date().toISOString(), new Date().toISOString(), id);
   }
 
-  listRecentProjects(limit = 20): ProjectWorkspace[] {
-    return this.list().slice(0, limit).map((workspace) => ({
+  listRecentProjects(limit?: number): ProjectWorkspace[] {
+    const workspaces = typeof limit === "number" ? this.list().slice(0, limit) : this.list();
+    return workspaces.map((workspace) => ({
       ...workspace,
       name: workspace.repoName,
       path: workspace.workspaceDir ?? "",
@@ -239,7 +240,8 @@ export class WorkspaceStore {
 
   deleteWorkspace(id: string) {
     this.db.prepare("DELETE FROM workflow_runs WHERE project_id = ?").run(id);
-    this.db.prepare("DELETE FROM workspaces WHERE id = ?").run(id);
+    const result = this.db.prepare("DELETE FROM workspaces WHERE id = ?").run(id) as { changes?: number };
+    return result.changes ?? 0;
   }
 
   close() {
@@ -277,7 +279,7 @@ export function touchSavedWorkspace(id: string) {
   defaultStore.touchWorkspace(id);
 }
 
-export function listRecentProjects(limit = 20) {
+export function listRecentProjects(limit?: number) {
   return defaultStore.listRecentProjects(limit);
 }
 
@@ -302,7 +304,7 @@ export function deleteWorkflowRunFromStore(runId: string) {
 }
 
 export function deleteWorkspaceFromStore(workspaceId: string) {
-  defaultStore.deleteWorkspace(workspaceId);
+  return defaultStore.deleteWorkspace(workspaceId);
 }
 
 function parseStack(raw: string) {

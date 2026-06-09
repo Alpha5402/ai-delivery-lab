@@ -8,6 +8,14 @@ export type StepResolveContext = {
     previousOutput: unknown;
     reasons?: string[];
   };
+  runOptions?: WorkflowStepRunOptions;
+};
+
+export type WorkflowStepRunOptions = {
+  pullRequest?: {
+    branch?: string;
+    commitMessage?: string;
+  };
 };
 
 export type StepOutputResolver = (ctx: StepResolveContext) => Promise<unknown>;
@@ -42,7 +50,7 @@ export async function resolveRegisteredStepOutput(ctx: StepResolveContext): Prom
 }
 
 /**
- * 注册 default 8 步 resolver。
+ * 注册 default 7 步 resolver。
  * 这些函数内部复用原有的 agent 实现，保持行为等价。
  * 必须在 app 启动时调用一次。
  */
@@ -50,7 +58,7 @@ export function registerDefaultStepResolvers(
   impl: {
     runClarifierAgent: (...args: any[]) => Promise<any>;
     runPlannerAgent: (...args: any[]) => Promise<any>;
-    runWorkflowStepAgent: (stepId: WorkflowStepId, run: WorkflowRun) => Promise<unknown>;
+    runWorkflowStepAgent: (stepId: WorkflowStepId, run: WorkflowRun, options?: WorkflowStepRunOptions) => Promise<unknown>;
     getStepOutput: <T>(run: WorkflowRun, stepId: WorkflowStepId) => T;
     buildRuntimeMemoryContext: (run: WorkflowRun, stepId: WorkflowStepId) => unknown;
   },
@@ -101,8 +109,8 @@ export function registerDefaultStepResolvers(
       }
 
       default:
-        // module_mapping, code_generation, repo_write, verification, pull_request
-        resolve = async (ctx) => impl.runWorkflowStepAgent(ctx.stepId, ctx.run);
+        // module_mapping, code_generation, verification, pull_request
+        resolve = async (ctx) => impl.runWorkflowStepAgent(ctx.stepId, ctx.run, ctx.runOptions);
         break;
     }
 

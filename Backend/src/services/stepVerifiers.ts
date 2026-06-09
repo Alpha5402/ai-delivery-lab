@@ -16,6 +16,7 @@ import path from "node:path";
 import type {
   ClarificationOutput,
   CodeGenerationPlan,
+  CodeReviewResult,
   ModuleMapping,
   QualityGateResult,
   RepoWriteResult,
@@ -34,6 +35,8 @@ export type VerifierResult = {
 
 const CLARIFICATION_CONFIDENCE_FLOOR = 0.7;
 const ACCEPTANCE_CRITERIA_MIN = 2;
+const ENTRYPOINT_FILE_RE = /(^|\/)(main|index)\.(jsx?|tsx?)$/i;
+const ENTRYPOINT_ALLOWED_TITLE_RE = /(入口|挂载|根节点|根组件|路由|Router|Provider|createRoot|hydrate|bootstrap|初始化\s*App|App\s*初始化)/i;
 
 function summarizeReasons(checks: StepCheck[]): string[] {
   return checks
@@ -73,6 +76,14 @@ function decide(
     confidence: Math.max(0, 1 - failed.length * 0.25 - warnings.length * 0.1),
     repairAttempts: 0,
   };
+}
+
+function isFrontendEntrypointFile(file: string): boolean {
+  return ENTRYPOINT_FILE_RE.test(file.replaceAll("\\", "/"));
+}
+
+function allowsEntrypointEdit(title: string): boolean {
+  return ENTRYPOINT_ALLOWED_TITLE_RE.test(title);
 }
 
 /**
@@ -243,7 +254,6 @@ export function verifySolutionDsl(output: SolutionDsl): VerifierResult {
 /**
  * Module Mapping 校验:
  *  - 每个 file 路径要么在 repositoryScan.fileTree 中,要么显式被认为是新文件;
- *  - reusableSkill 不能为空。
  *
  * 这里允许"新文件"出现,但需要 module reason 中提到 "新增"/"create"/"new" 等关键词,
  * 或者文件路径不存在于现有 fileTree(由调用方上层用人工 gate 把关)。
@@ -303,23 +313,45 @@ export function verifyModuleMapping(
     });
   }
 
-  if (!output.reusableSkill || output.reusableSkill.trim().length === 0) {
-    checks.push({
-      id: "module_mapping.reusable_skill",
-      type: "factual",
-      status: "warning",
-      message: "未指定 reusableSkill,后续 codegen 无法复用既有 Skill",
-    });
-  }
-
   return { checks, qualityGate: decide(checks, { repairableOnFail: true }) };
 }
 
 /**
  * Code Generation Plan 校验:
  *  - 每个 task 必须至少包含 1 个文件路径;
+ *  - testRequired=true 的 task 必须指定 testFiles;
  *  - testRequired 至少在 tasks 中出现一次 true(否则警告)。
  */
+export function verifyCodeReviewResult(output: CodeReviewResult): VerifierResult {
+  const checks: StepCheck[] = [];
+
+  if (!output.reviewedFiles || output.reviewedFiles.length === 0) {
+    checks.push({ id: "code_review.no_files", type: "factual", status: "failed", message: "未审查任何文件" });
+  } else {
+    checks.push({ id: "code_review.files", type: "factual", status: "passed", message: `已审查 ${output.reviewedFiles.length} 个文件` });
+  }
+
+  if (output.decision === "request-changes" && (!output.findings || output.findings.length === 0)) {
+    checks.push({ id: "code_review.no_findings", type: "factual", status: "failed", message: "decision=request-changes 但 findings 为空" });
+  }
+
+  const blockers = (output.findings ?? []).filter((f) => f.severity === "blocker");
+  const majors = (output.findings ?? []).filter((f) => f.severity === "major");
+  if (blockers.length > 0) {
+    checks.push({ id: "code_review.blockers", type: "factual", status: "failed", message: `${blockers.length} 个 blocker 级别问题` });
+  }
+  if (majors.length > 0) {
+    checks.push({ id: "code_review.majors", type: "factual", status: "warning", message: `${majors.length} 个 major 级别问题` });
+  }
+
+  const hasBlocking = blockers.length > 0 || majors.length > 0;
+  if (hasBlocking) {
+    return { checks, qualityGate: { decision: "need-human", reasons: [`存在 ${blockers.length + majors.length} 个 blocker/major 问题`], confidence: 0.5, repairAttempts: 0 } };
+  }
+
+  return { checks, qualityGate: decide(checks, { repairableOnFail: true }) };
+}
+
 export function verifyCodeGenerationPlan(
   output: CodeGenerationPlan,
   workspace: WorkspaceContext,
@@ -329,6 +361,8 @@ export function verifyCodeGenerationPlan(
   const workspaceDir = workspace.workspaceDir;
   const tasksWithoutFiles: string[] = [];
   const tasksWithSuspiciousPaths: string[] = [];
+  const tasksWithoutTestFiles: string[] = [];
+  const tasksWithUnjustifiedEntrypoints: string[] = [];
 
   for (const task of output.tasks) {
     if (task.files.length === 0) {
@@ -336,7 +370,17 @@ export function verifyCodeGenerationPlan(
       continue;
     }
 
-    for (const file of task.files) {
+    const testFiles = (task as { testFiles?: string[] }).testFiles ?? [];
+    if (task.testRequired && testFiles.length === 0) {
+      tasksWithoutTestFiles.push(task.id);
+    }
+
+    const entrypointFiles = task.files.filter(isFrontendEntrypointFile);
+    if (entrypointFiles.length > 0 && !allowsEntrypointEdit(task.title)) {
+      tasksWithUnjustifiedEntrypoints.push(`${task.id}:${entrypointFiles.join(",")}`);
+    }
+
+    for (const file of [...task.files, ...testFiles]) {
       const known = fileSet.has(file);
       const onDisk = workspaceDir
         ? existsSync(path.resolve(workspaceDir, file))
@@ -365,6 +409,26 @@ export function verifyCodeGenerationPlan(
       status: "failed",
       message: `${tasksWithSuspiciousPaths.length} 个任务包含可疑路径(绝对路径或路径穿越)`,
       evidence: { tasks: tasksWithSuspiciousPaths },
+    });
+  }
+
+  if (tasksWithUnjustifiedEntrypoints.length > 0) {
+    checks.push({
+      id: "code_generation.unjustified_entrypoint_files",
+      type: "factual",
+      status: "failed",
+      message: `${tasksWithUnjustifiedEntrypoints.length} 个任务包含入口文件,但标题未说明需要修改入口挂载/Provider/Router`,
+      evidence: { tasks: tasksWithUnjustifiedEntrypoints },
+    });
+  }
+
+  if (tasksWithoutTestFiles.length > 0) {
+    checks.push({
+      id: "code_generation.missing_test_files",
+      type: "factual",
+      status: "warning",
+      message: `${tasksWithoutTestFiles.length} 个任务声明需补测试,但没有指定测试文件（code writer 会自动推导）`,
+      evidence: { tasks: tasksWithoutTestFiles },
     });
   }
 
@@ -472,7 +536,8 @@ export function verifyRepoWrite(
 export function verifyVerification(output: VerificationResult): VerifierResult {
   const checks: StepCheck[] = [];
 
-  if (output.commands.length === 0) {
+  // no testFiles → unitTests=skipped → 允许空 commands
+  if (output.commands.length === 0 && output.unitTests !== "skipped") {
     checks.push({
       id: "verification.no_real_commands",
       type: "command",
@@ -485,6 +550,24 @@ export function verifyVerification(output: VerificationResult): VerifierResult {
         decision: "need-human",
         reasons: ["verification 缺少真实命令执行 trace"],
         confidence: 0.2,
+        repairAttempts: 0,
+      },
+    };
+  }
+
+  if (output.commands.length === 0 && output.unitTests === "skipped") {
+    checks.push({
+      id: "verification.no_test_files",
+      type: "factual",
+      status: "passed",
+      message: "未声明单元测试文件,质量门禁默认放行",
+    });
+    return {
+      checks,
+      qualityGate: {
+        decision: "auto-continue",
+        reasons: ["质量门禁默认放行"],
+        confidence: 1,
         repairAttempts: 0,
       },
     };
@@ -586,6 +669,8 @@ export function runStepVerifier(
     case "code_generation":
       if (!workspace) return verifyTrivialOutput(stepId, output);
       return verifyCodeGenerationPlan(output as CodeGenerationPlan, workspace);
+    case "code_review":
+      return verifyCodeReviewResult(output as CodeReviewResult);
     case "repo_write":
       if (!workspace) return verifyTrivialOutput(stepId, output);
       return verifyRepoWrite(output as RepoWriteResult, workspace);

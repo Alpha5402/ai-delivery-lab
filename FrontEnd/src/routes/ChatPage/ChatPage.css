@@ -1,25 +1,30 @@
 .requirement-page {
   display: grid;
-  gap: 20px;
+  gap: 16px;
   margin: 0 auto;
-  max-width: 1180px;
+  max-width: 1240px;
   padding-bottom: 36px;
   width: 100%;
 }
 
 .requirement-hero {
-  align-items: flex-start;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(16, 24, 40, 0.04);
   display: flex;
   gap: 24px;
   justify-content: space-between;
+  padding: 18px 20px;
 }
 
 .requirement-hero h1.ant-typography {
   color: var(--color-ink);
-  font-size: clamp(34px, 6vw, 56px);
-  letter-spacing: -0.055em;
-  line-height: 0.98;
-  margin: 8px 0 16px;
+  font-size: 28px;
+  letter-spacing: 0;
+  line-height: 1.14;
+  margin: 4px 0 8px;
   max-width: 760px;
 }
 
@@ -30,7 +35,7 @@
 .requirement-hero__link {
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid var(--color-border);
-  border-radius: 999px;
+  border-radius: 8px;
   color: var(--color-accent-strong);
   flex: 0 0 auto;
   font-weight: 800;
@@ -53,14 +58,14 @@
 .suggested-tasks {
   background: rgba(255, 255, 255, 0.86);
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 28px;
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.06);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(16, 24, 40, 0.04);
 }
 
 .repo-summary-card .ant-card-body {
   display: grid;
-  gap: 18px;
-  padding: 24px;
+  gap: 14px;
+  padding: 18px 20px;
 }
 
 .repo-summary-card__main {
@@ -74,8 +79,8 @@
 .composer-card h2.ant-typography,
 .suggested-tasks h3.ant-typography {
   color: var(--color-ink);
-  letter-spacing: -0.025em;
-  margin: 6px 0 10px;
+  letter-spacing: 0;
+  margin: 4px 0 8px;
 }
 
 .repo-summary-card__main .ant-typography {
@@ -89,9 +94,9 @@
 }
 
 .repo-summary-card__signals span {
-  background: linear-gradient(180deg, rgba(26, 115, 232, 0.08), rgba(26, 115, 232, 0.035));
+  background: #f8fafc;
   border: 1px solid rgba(26, 115, 232, 0.11);
-  border-radius: 16px;
+  border-radius: 8px;
   color: var(--color-ink);
   font-size: 13px;
   font-weight: 800;
@@ -111,7 +116,7 @@
   align-items: stretch;
   display: grid;
   gap: 20px;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
 }
 
 .composer-card .ant-card-body,
@@ -129,7 +134,7 @@
 
 .composer-card textarea.ant-input {
   background: #fbfcff;
-  border-radius: 22px;
+  border-radius: 8px;
   color: var(--color-ink);
   font-size: 15px;
   line-height: 1.75;
@@ -144,9 +149,54 @@
 }
 
 .composer-card__actions .ant-btn-primary {
-  border-radius: 999px;
+  border-radius: 8px;
   font-weight: 900;
   min-width: 148px;
+}
+
+.delivery-phase-strip {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+}
+
+.delivery-phase-strip span {
+  color: #344054;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.delivery-phase-strip span:not(:last-child)::after {
+  color: #98a2b3;
+  content: "→";
+  margin-left: 8px;
+}
+
+.suggested-task-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.suggested-task-chips button {
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  color: #344054;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 10px;
+}
+
+.suggested-task-chips button:hover {
+  border-color: rgba(22, 119, 255, 0.34);
+  color: #145bcb;
 }
 
 .workflow-preview,
@@ -217,9 +267,11 @@
 }
 
 .workflow-history {
+  align-content: start;
   display: grid;
-  gap: 16px;
-  padding: 22px;
+  gap: 12px;
+  min-height: 100%;
+  padding: 18px;
 }
 
 .workflow-history__header {
@@ -240,20 +292,20 @@
 }
 
 .workflow-run-card {
-  align-items: center;
-  background: linear-gradient(90deg, rgba(248, 250, 252, 0.94), rgba(255, 255, 255, 0.72));
+  align-items: flex-start;
+  background: #fff;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
+  border-radius: 8px;
   display: flex;
   gap: 14px;
   justify-content: space-between;
-  padding: 16px;
+  padding: 12px;
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
 .workflow-run-card:hover {
   border-color: rgba(26, 115, 232, 0.3);
-  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
   transform: translateY(-1px);
 }
 
@@ -264,15 +316,15 @@
   cursor: pointer;
   display: grid;
   flex: 1;
-  gap: 14px;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  grid-template-columns: 1fr;
   min-width: 0;
   padding: 0;
   text-align: left;
 }
 
 .workflow-run-card strong,
-.workflow-run-card span {
+.workflow-run-card__description {
   display: block;
 }
 
@@ -282,12 +334,20 @@
   margin-bottom: 4px;
 }
 
-.workflow-run-card span,
+.workflow-run-card__description,
 .workflow-history__empty {
   color: var(--color-muted);
   font-size: 13px;
   line-height: 1.6;
   margin: 0;
+}
+
+.workflow-run-card__status.ant-tag {
+  align-items: center;
+  display: inline-flex;
+  justify-self: start;
+  margin: 0;
+  width: fit-content;
 }
 
 .workflow-run-card small {

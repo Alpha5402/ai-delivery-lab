@@ -7,6 +7,7 @@ export const workflowStepIds = [
   "solution_design",
   "module_mapping",
   "code_generation",
+  "code_review",
   "repo_write",
   "verification",
   "pull_request",
@@ -61,29 +62,31 @@ export const verificationStatuses = [
 ] as const;
 
 // TODO(PR3): stepOrder / stepLabels / stepAgents 应从 defaultWorkflowTemplate 派生，
-// 消除双写。当前保留硬编码以保证向后兼容，新增模板注册后由测试校验一致性。
-export const stepOrder = [...workflowStepIds];
+// 消除双写。repo_write 保留为 legacy step id，但不再作为新 workflow 的顶级阶段。
+export const stepOrder = workflowStepIds.filter((id) => id !== "repo_write");
 
 export const stepLabels: Record<WorkflowStepId, string> = {
-  requirement_intake: "PM 输入",
-  clarification: "澄清 Agent",
-  solution_design: "方案 DSL",
-  module_mapping: "模块定位",
-  code_generation: "代码计划",
-  repo_write: "写入仓库",
-  verification: "Lint / 单测",
+  requirement_intake: "接收需求",
+  clarification: "确认需求",
+  solution_design: "生成方案",
+  module_mapping: "定位代码",
+  code_generation: "生成代码",
+  code_review: "代码审查",
+  repo_write: "生成代码",
+  verification: "验证结果",
   pull_request: "提交 PR",
 };
 
 export const stepAgents: Record<WorkflowStepId, string> = {
-  requirement_intake: "Requirement Composer",
-  clarification: "Clarifier Agent",
-  solution_design: "Planner Agent",
-  module_mapping: "Context Locator",
-  code_generation: "Codegen Skill",
-  repo_write: "Conduit Writer",
-  verification: "Verifier",
-  pull_request: "PR Assistant",
+  requirement_intake: "接收需求",
+  clarification: "确认需求",
+  solution_design: "生成方案",
+  module_mapping: "定位代码",
+  code_generation: "生成代码",
+  code_review: "代码审查 Agent",
+  repo_write: "生成代码",
+  verification: "验证结果",
+  pull_request: "提交 PR",
 };
 
 // 旧的 stepExecutionModes 常量已迁移至 services/workflowSettingsService.ts 的 defaultStepExecutionModes，
@@ -152,24 +155,43 @@ export const moduleMappingSchema = z.object({
     reason: z.string().min(1),
     files: z.array(z.string().min(1)),
   })),
-  reusableSkill: z.string().min(1),
+  reusableSkill: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().min(1).optional(),
+  ),
 });
 
-export const codeGenerationPlanSchema = z.object({
+/** LLM 面向的代码生成计划 schema — content 限制 200 字符，仅用于展示片段。 */
+export const llmCodeGenerationPlanSchema = z.object({
   strategy: z.string().min(1),
   tasks: z.array(z.object({
     id: z.string().min(1),
     title: z.string().min(1),
     files: z.array(z.string().min(1)),
     testRequired: z.boolean(),
-    /** 跨栈 Skill 注入：标注该任务覆盖的层 (data / api / ui) */
+    /** testRequired=true 时必须填写：本次生成代码阶段要一并创建/修改的测试文件 */
+    testFiles: z.array(z.string().min(1)).optional(),
     coverLayer: z.enum(["data", "api", "ui"]).optional(),
   })),
-  /**
-   * 可选的可落盘补丁集合。当 LLM 对文件内容有把握时,可以同时输出完整文件内容,
-   * 由后续 repo_write step 真实写入并切到 applied 模式。
-   * 不提供则保持 planned 模式。
-   */
+  patches: z.array(z.object({
+    path: z.string().min(1),
+    changeType: z.enum(["created", "modified"]),
+    content: z.string().max(200),
+  })).optional(),
+});
+
+/** Golden-path 确定性补丁 schema — content 无长度限制，承载完整文件内容。 */
+export const deterministicCodeGenerationPlanSchema = z.object({
+  strategy: z.string().min(1),
+  tasks: z.array(z.object({
+    id: z.string().min(1),
+    title: z.string().min(1),
+    files: z.array(z.string().min(1)),
+    testRequired: z.boolean(),
+    /** testRequired=true 时必须填写：本次生成代码阶段要一并创建/修改的测试文件 */
+    testFiles: z.array(z.string().min(1)).optional(),
+    coverLayer: z.enum(["data", "api", "ui"]).optional(),
+  })),
   patches: z.array(z.object({
     path: z.string().min(1),
     changeType: z.enum(["created", "modified"]),
@@ -177,9 +199,12 @@ export const codeGenerationPlanSchema = z.object({
   })).optional(),
 });
 
+/** @deprecated 使用 llmCodeGenerationPlanSchema 或 deterministicCodeGenerationPlanSchema */
+export const codeGenerationPlanSchema = llmCodeGenerationPlanSchema;
+
 /**
  * 单个文件改动的描述。
- * - planned: 仅是 codegen / repo_write 的计划写入；
+ * - planned: 仅是 codegen 的计划写入；
  * - applied: runtime 已经把内容真实写入工作区。
  */
 export const fileChangeSchema = z.object({
@@ -250,6 +275,8 @@ export const pullRequestResultSchema = z.object({
   branch: z.string().optional(),
   /** push 后的 commit SHA */
   commitSha: z.string().optional(),
+  /** 本次提交使用的 commit message */
+  commitMessage: z.string().optional(),
   /** GitHub PR number */
   prNumber: z.number().optional(),
   /** 是否已 push 到 remote */
@@ -329,7 +356,80 @@ export type ClarificationDecision = z.infer<typeof clarificationDecisionSchema>;
 export type ClarificationOutput = z.infer<typeof clarificationOutputSchema>;
 export type SolutionDsl = z.infer<typeof solutionDslSchema>;
 export type ModuleMapping = z.infer<typeof moduleMappingSchema>;
-export type CodeGenerationPlan = z.infer<typeof codeGenerationPlanSchema>;
+export type LlmCodeGenerationPlan = z.infer<typeof llmCodeGenerationPlanSchema>;
+export type DeterministicCodeGenerationPlan = z.infer<typeof deterministicCodeGenerationPlanSchema>;
+/** CodeGenerationPlan 使用 deterministic schema 类型（content: string），兼容 golden path 完整文件 */
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeCodeReviewFinding(value: unknown, index: number) {
+  if (!isPlainRecord(value)) return value;
+  const file = value.file ?? value.path;
+  const recommendation = value.recommendation ?? value.suggestion;
+  const rawLine = value.line ?? value.lines;
+  const parsedLine = typeof rawLine === "number"
+    ? rawLine
+    : typeof rawLine === "string"
+      ? Number.parseInt(rawLine, 10)
+      : undefined;
+  return {
+    ...value,
+    id: value.id ?? `F${String(index + 1).padStart(3, "0")}`,
+    title: value.title ?? value.message ?? value.summary,
+    detail: value.detail ?? value.message ?? value.reason ?? value.title,
+    ...(file ? { file } : {}),
+    ...(Number.isFinite(parsedLine) ? { line: parsedLine } : {}),
+    ...(recommendation ? { recommendation } : {}),
+  };
+}
+
+function normalizeCodeReviewChecklistItem(value: unknown, index: number) {
+  if (typeof value === "string") {
+    return {
+      id: `C${String(index + 1).padStart(3, "0")}`,
+      label: value,
+      status: "warning",
+    };
+  }
+  if (!isPlainRecord(value)) return value;
+  return {
+    ...value,
+    id: value.id ?? `C${String(index + 1).padStart(3, "0")}`,
+    label: value.label ?? value.message ?? value.title ?? value.detail,
+    detail: value.detail ?? value.message,
+  };
+}
+
+export const codeReviewResultSchema = z.object({
+  summary: z.string().min(1),
+  decision: z.enum(["approve", "request-changes"]),
+  findings: z.preprocess((value) => (
+    Array.isArray(value) ? value.map(normalizeCodeReviewFinding) : value
+  ), z.array(z.object({
+    id: z.string().min(1),
+    severity: z.enum(["blocker", "major", "minor", "nit"]),
+    title: z.string().min(1),
+    detail: z.string().min(1),
+    file: z.string().optional(),
+    line: z.number().optional(),
+    recommendation: z.string().optional(),
+  }))),
+  checklist: z.preprocess((value) => (
+    Array.isArray(value) ? value.map(normalizeCodeReviewChecklistItem) : value
+  ), z.array(z.object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    status: z.enum(["passed", "warning", "failed", "not_applicable"]),
+    detail: z.string().optional(),
+  }))),
+  reviewedFiles: z.array(z.string()),
+  riskAreas: z.array(z.string()),
+});
+
+export type CodeReviewResult = z.infer<typeof codeReviewResultSchema>;
+export type CodeGenerationPlan = DeterministicCodeGenerationPlan;
 export type RepoWriteResult = z.infer<typeof repoWriteResultSchema>;
 export type FileChange = z.infer<typeof fileChangeSchema>;
 export type VerificationResult = z.infer<typeof verificationResultSchema>;

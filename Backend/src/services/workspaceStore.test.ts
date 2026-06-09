@@ -61,8 +61,8 @@ function createWorkflowRun(projectId: string, id = "run-demo"): WorkflowRun {
     steps: [
       {
         id: "requirement_intake",
-        label: "PM 输入",
-        agent: "Requirement Composer",
+        label: "接收需求",
+        agent: "接收需求",
         status: "success",
         input: { source: "pm" },
         output: {
@@ -71,12 +71,12 @@ function createWorkflowRun(projectId: string, id = "run-demo"): WorkflowRun {
           pattern: "frontend-only",
           targetRepo: "conduit",
         },
-        logs: ["PM 需求已接收"],
+        logs: ["需求已接收"],
       },
       {
         id: "clarification",
-        label: "澄清 Agent",
-        agent: "Clarifier Agent",
+        label: "确认需求",
+        agent: "确认需求",
         status: "waiting-human",
         input: { from: "requirement_intake" },
         logs: [],
@@ -133,6 +133,25 @@ describe("WorkspaceStore", () => {
     ]);
     expect(store.getWorkflowRun(run.id)?.steps[0]?.output).toMatchObject({ rawText: "文章详情页新增字数统计" });
     expect(store.listRecentProjects(1)[0]).toMatchObject({ id: workspace.id, name: "demo" });
+
+    store.close();
+  });
+
+  it("deletes workspace records and related workflow runs from SQLite", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "workspace-store-delete-test-"));
+    const dbPath = path.join(dir, "workspaces.sqlite");
+    const store = new WorkspaceStore(dbPath);
+    const workspace = createWorkspace();
+    const run = createWorkflowRun(workspace.id);
+
+    store.upsert(workspace);
+    store.saveWorkflowRun(workspace.id, run);
+
+    expect(store.deleteWorkspace(workspace.id)).toBe(1);
+    expect(store.get(workspace.id)).toBeNull();
+    expect(store.getProject(workspace.id)).toBeNull();
+    expect(store.getWorkflowRun(run.id)).toBeNull();
+    expect(store.listRecentProjects()).toEqual([]);
 
     store.close();
   });

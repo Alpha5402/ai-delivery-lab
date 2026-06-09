@@ -5,14 +5,15 @@ import type { WorkflowStepId } from "./types";
 
 // Mirror of Backend/src/workflowTemplates/builtin/defaultTemplate.ts
 const FALLBACK_AGENTS: Record<string, string> = {
-  requirement_intake: "Requirement Composer",
-  clarification: "Clarifier Agent",
-  solution_design: "Planner Agent",
-  module_mapping: "Context Locator",
-  code_generation: "Codegen Skill",
-  repo_write: "Conduit Writer",
-  verification: "Verifier",
-  pull_request: "PR Assistant",
+  requirement_intake: "接收需求",
+  clarification: "确认需求",
+  solution_design: "生成方案",
+  module_mapping: "定位代码",
+  code_generation: "生成代码",
+  code_review: "代码审查",
+  repo_write: "生成代码",
+  verification: "验证结果",
+  pull_request: "提交 PR",
 };
 
 const FALLBACK_PROFILE_IDS: Record<string, string> = {
@@ -21,6 +22,7 @@ const FALLBACK_PROFILE_IDS: Record<string, string> = {
   solution_design: "planner-agent",
   module_mapping: "repository-mapper",
   code_generation: "codegen-skill",
+  code_review: "code-review-agent",
   repo_write: "repository-writer",
   verification: "verification-runner",
   pull_request: "pr-assistant",
@@ -32,6 +34,7 @@ const FALLBACK_SCHEMA_IDS: Record<string, string> = {
   solution_design: "solutionDsl",
   module_mapping: "moduleMapping",
   code_generation: "codeGenerationPlan",
+  code_review: "codeReviewResult",
   repo_write: "repoWriteResult",
   verification: "verificationResult",
   pull_request: "pullRequestResult",
