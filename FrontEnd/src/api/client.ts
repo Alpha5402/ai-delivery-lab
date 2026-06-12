@@ -327,6 +327,8 @@ export type SkillSummary = {
   name: string;
   version: string;
   source?: "builtin" | "json";
+  builtin?: boolean;
+  overridden?: boolean;
   requirementPatterns: string[];
   scopes: string[];
   matchKeywords?: string[];
@@ -361,6 +363,16 @@ export function updateJsonSkill(skillId: string, body: Record<string, unknown>) 
 
 export function deleteJsonSkill(skillId: string) {
   return request<void>(`/skills/json/${skillId}`, { method: "DELETE" });
+}
+
+export function resetBuiltinSkill(skillId: string) {
+  return request<SkillManifest>(`/skills/${skillId}/reset`, { method: "POST" });
+}
+
+// ---- Code Review Repair -------------------------------------------------------
+
+export function repairCodeReview(runId: string) {
+  return request<WorkflowRun>(`/workflows/${runId}/steps/code_review/repair`, { method: "POST" });
 }
 
 // ---- Workflow Templates -------------------------------------------------------

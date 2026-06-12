@@ -127,6 +127,19 @@ export function resolveConfirmationDecision(
     };
   }
 
+  // ---- pull_request Phase 2 已经完成真实 push / PR 创建，不需要再二次确认 ----
+  if (stepId === "pull_request") {
+    const outputRec = output as Record<string, unknown>;
+    if (outputRec.status === "ready" || outputRec.pushed === true) {
+      return {
+        shouldAutoContinue: true,
+        nextStatus: "success",
+        reasons: ["pull_request completed"],
+        appliedPolicy: { source: "quality-gate" },
+      };
+    }
+  }
+
   // ---- Skill allow-auto → 覆盖 manual 模式 ----
   if (addon?.mode === "allow-auto") {
     reasons.push("Skill allow-auto: 允许自动推进");

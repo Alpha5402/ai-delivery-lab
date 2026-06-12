@@ -53,15 +53,25 @@ const skillStepSpecSchema = z.object({
 
 const skillStepsSchema = z.record(workflowStepIdSchema, skillStepSpecSchema).optional();
 
+const skillTagArraySchema = z.preprocess(
+  (value) => {
+    if (!Array.isArray(value)) return value;
+    return Array.from(new Set(
+      value
+        .map((item) => (typeof item === "string" ? item.trim() : item))
+        .filter((item): item is string => typeof item === "string" && item.length > 0),
+    ));
+  },
+  z.array(z.string().min(1)).min(1),
+);
+
 export const skillManifestSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string().optional(),
   version: z.string().min(1),
-  requirementPatterns: z.array(z.enum([
-    "frontend-only", "cross-stack", "interaction", "unclear",
-  ])).min(1),
-  scopes: z.array(z.enum(["frontend", "backend", "fullstack"])).min(1),
+  requirementPatterns: skillTagArraySchema,
+  scopes: skillTagArraySchema,
   match: z.object({
     keywords: z.array(z.string()).optional(),
     fileGlobs: z.array(z.string()).optional(),

@@ -218,6 +218,15 @@
   padding-top: 2px;
 }
 
+.settings-page__readonly-note {
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 3px 8px;
+}
+
 .settings-page__skill-button.ant-btn {
   align-items: center;
   background: #fff;

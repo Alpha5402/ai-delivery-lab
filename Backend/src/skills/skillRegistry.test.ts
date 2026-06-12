@@ -257,9 +257,15 @@ describe("workspace-aware matching", () => {
     expect(skill!.id).toBe("frontend-display-computed-metric");
   });
 
-  it("routeHint + keyword combo selects correct backend pagination skill", () => {
+  it("does not select backend pagination for frontend-only requests", () => {
+    const run = makeRun("给列表加上分页查询", "frontend-only");
+    const skill = selectSkill(run, ws);
+    expect(skill?.id).not.toBe("backend-add-pagination");
+  });
+
+  it("routeHint + keyword combo selects backend pagination for unclear requests", () => {
     // "分页" keyword gives backend skill keyword points + "list" routeHint
-    const run = makeRun("给列表加上分页查询");
+    const run = makeRun("给列表加上分页查询", "unclear");
     const skill = selectSkill(run, ws);
     expect(skill).toBeDefined();
     expect(skill!.id).toBe("backend-add-pagination");

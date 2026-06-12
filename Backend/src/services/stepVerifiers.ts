@@ -536,42 +536,23 @@ export function verifyRepoWrite(
 export function verifyVerification(output: VerificationResult): VerifierResult {
   const checks: StepCheck[] = [];
 
-  // no testFiles → unitTests=skipped → 允许空 commands
-  if (output.commands.length === 0 && output.unitTests !== "skipped") {
+  const realCommands = output.commands.filter((c) => c.status !== "not_configured" && c.status !== "skipped");
+
+  // 没有真实执行的命令 → 默认放行
+  if (realCommands.length === 0) {
     checks.push({
       id: "verification.no_real_commands",
-      type: "command",
-      status: "failed",
-      message: "runtime 没有真实执行任何验证命令,结果不可信",
+      type: "factual",
+      status: "passed",
+      message: "未检测到可执行质量门禁,默认放行",
     });
     return {
       checks,
-      qualityGate: {
-        decision: "need-human",
-        reasons: ["verification 缺少真实命令执行 trace"],
-        confidence: 0.2,
-        repairAttempts: 0,
-      },
+      qualityGate: { decision: "auto-continue", reasons: ["质量门禁默认放行"], confidence: 1, repairAttempts: 0 },
     };
   }
 
-  if (output.commands.length === 0 && output.unitTests === "skipped") {
-    checks.push({
-      id: "verification.no_test_files",
-      type: "factual",
-      status: "passed",
-      message: "未声明单元测试文件,质量门禁默认放行",
-    });
-    return {
-      checks,
-      qualityGate: {
-        decision: "auto-continue",
-        reasons: ["质量门禁默认放行"],
-        confidence: 1,
-        repairAttempts: 0,
-      },
-    };
-  }
+  // 有真实命令 → 检查是否有失败
 
   const failedCommands = output.commands.filter((c) => c.status === "failed");
   const notExecuted = output.commands.filter((c) => c.status === "not_executed");

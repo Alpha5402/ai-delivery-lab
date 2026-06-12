@@ -125,6 +125,7 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
   if (stepId === "code_generation") {
     const goldenPlan = tryGoldenPathCodegen(run, getCurrentWorkspace() ?? undefined);
     if (goldenPlan) {
+      const skillSpec = getSkillStepSpec(run, stepId, getCurrentWorkspace() ?? undefined);
       recordMetric({
         agent: stepAgents[stepId],
         calls: 1,
@@ -152,7 +153,8 @@ export async function runWorkflowStepAgent(stepId: WorkflowStepId, run: Workflow
           toolCalls: repoWriteResult?.runtimeTrace && typeof repoWriteResult.runtimeTrace === "object" && "toolCalls" in repoWriteResult.runtimeTrace
             ? (repoWriteResult.runtimeTrace as { toolCalls?: unknown[] }).toolCalls ?? []
             : [],
-          selectedSkillId: getSkillStepSpec(run, stepId, getCurrentWorkspace() ?? undefined).skillId,
+          selectedSkillId: skillSpec.skillId,
+          skillMatchReason: skillSpec.skillMatchReason,
         },
       };
     }
@@ -240,25 +242,27 @@ async function runVerificationStep(run: WorkflowRun) {
   const testFiles = getGeneratedTestFiles(run);
   const detection = await runRuntimeTool(workspace, "detect_workflow_commands");
   const candidates = (detection.output as {
-    candidates: Array<{ label: string; available: boolean; argv: string[]; description: string; reason: string }>;
+    candidates: Array<{ label: string; available: boolean; argv: string[]; description: string; reason: string; cwd?: string; scope?: string | null }>;
   }).candidates ?? [];
 
-  // 动态:基于 pattern/scope + Skill 的 addon 决定哪些命令必选/可选。
+  // 动态:基于 pattern/scope + Skill addon + 是否有 testFiles 决定命令策略
   const ctx = deriveRouterContext(run);
   const skillSpecForVerify = getSkillStepSpec(run, "verification", getCurrentWorkspace() ?? undefined);
   const policy = verificationCommandPolicy(ctx, skillSpecForVerify.verificationPolicyAddon);
+  // 有生成测试文件时，test 提升为 required
+  if (testFiles.length > 0 && !policy.required.includes("npm:test")) {
+    policy.required = [...policy.required, "npm:test"];
+  }
 
   const commandResults: VerificationCommandResult[] = [];
   const toolTraces = [detection];
 
-  // 顺序执行:typecheck → lint → test → build;如果 npm:typecheck 已可用则跳过 tsc:noemit。
+  // 顺序执行:typecheck → lint → test → build。
   // required 命令即使 not_configured 也明确记录,optional 命令仅 available 时执行。
-  const order = ["npm:typecheck", "npm:lint", "npm:test", "npm:build", "tsc:noemit"];
-  let typecheckAlreadyDone = false;
+  const order = ["npm:typecheck", "npm:lint", "npm:test", "npm:build"];
   for (const label of order) {
     const candidate = candidates.find((c) => c.label === label);
     if (!candidate) continue;
-    if (label === "tsc:noemit" && typecheckAlreadyDone) continue;
 
     const isRequired = policy.required.includes(label);
     const isOptional = policy.optional.includes(label);
@@ -281,7 +285,7 @@ async function runVerificationStep(run: WorkflowRun) {
       continue;
     }
 
-    const call = await runRuntimeTool(workspace, "run_command", { label });
+    const call = await runRuntimeTool(workspace, "run_command", { label, cwd: candidate.cwd });
     toolTraces.push(call);
     const cmd = call.output as {
       label: string;
@@ -303,9 +307,6 @@ async function runVerificationStep(run: WorkflowRun) {
       stdoutPreview: cmd.stdoutPreview,
       stderrPreview: cmd.stderrPreview,
     });
-    if (label === "npm:typecheck" || label === "tsc:noemit") {
-      typecheckAlreadyDone = true;
-    }
   }
 
   function statusFor(label: VerificationCommandResult["label"]): VerificationStatus {
@@ -317,12 +318,13 @@ async function runVerificationStep(run: WorkflowRun) {
     return items[0].status;
   }
 
-  // 无 testFiles：质量门禁默认放行
-  const noTestDeclared = testFiles.length === 0;
+  // unitTests: 有真实命令结果时优先用执行结果；只有无 testFiles 且无测试命令执行时才 skipped
+  const unitTestResult = statusFor("unit_tests");
+  const noTestDeclared = testFiles.length === 0 && unitTestResult === "not_configured";
   const result: VerificationResult = {
     typecheck: statusFor("typecheck"),
     lint: statusFor("lint"),
-    unitTests: noTestDeclared ? "skipped" : statusFor("unit_tests"),
+    unitTests: noTestDeclared ? "skipped" : unitTestResult,
     build: statusFor("build"),
     coverage: null,
     testSuites: [],
@@ -354,7 +356,7 @@ async function runVerificationStep(run: WorkflowRun) {
       workspaceDir: workspace.workspaceDir,
       observations: [
         `verification 真实执行了 ${commandResults.filter((c) => c.status === "passed" || c.status === "failed").length} 个命令`,
-        `检测到的脚本：${(detection.output as { detectedScripts: string[] }).detectedScripts.join(", ")}`,
+        `检测到的脚本：${formatDetectedScripts((detection.output as { detectedScripts?: unknown }).detectedScripts)}`,
       ],
       toolCalls: toolTraces,
       selectedSkillId: skillSpecForVerify.skillId,
@@ -364,8 +366,21 @@ async function runVerificationStep(run: WorkflowRun) {
   };
 }
 
+function formatDetectedScripts(value: unknown) {
+  if (Array.isArray(value)) return value.join(", ");
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .map(([scope, scripts]) => {
+        const list = Array.isArray(scripts) ? scripts.join(", ") : String(scripts ?? "");
+        return list ? `${scope}: ${list}` : `${scope}: 无`;
+      });
+    return entries.length > 0 ? entries.join("；") : "无";
+  }
+  return "无";
+}
+
 function labelToVerificationLabel(label: string): VerificationCommandResult["label"] {
-  if (label === "npm:typecheck" || label === "tsc:noemit") return "typecheck";
+  if (label === "npm:typecheck") return "typecheck";
   if (label === "npm:lint") return "lint";
   if (label === "npm:test") return "unit_tests";
   if (label === "npm:build") return "build";
@@ -388,7 +403,7 @@ function hasReviewableDiff(result: (RepoWriteResult & { runtimeTrace: unknown })
   );
 }
 
-async function runCodeReviewStep(run: WorkflowRun) {
+export async function runCodeReviewStep(run: WorkflowRun) {
   const spec = agentSpecs.code_review;
   const workspace = getCurrentWorkspace();
   const repoResult = run.steps.find((s) => s.id === "repo_write")?.output as RepoWriteResult | undefined;
@@ -428,6 +443,90 @@ async function runCodeReviewStep(run: WorkflowRun) {
     },
   };
 }
+
+async function runCodeReviewFixAgent(
+  run: WorkflowRun,
+  review: CodeReviewResult,
+): Promise<(RepoWriteResult & { runtimeTrace: unknown }) | null> {
+  const workspace = getCurrentWorkspace();
+  if (!workspace?.workspaceDir) throw new Error("No workspace available for code review fix.");
+
+  // 优先读取 code_generation 的输出（新 workflow），fallback 到 legacy repo_write
+  const codegenOutput = run.steps.find((s) => s.id === "code_generation")?.output as Record<string, unknown> | undefined;
+  const repoWriteResult = (codegenOutput?.repoWriteResult as RepoWriteResult | undefined)
+    ?? (codegenOutput as RepoWriteResult | undefined)
+    ?? (run.steps.find((s) => s.id === "repo_write")?.output as RepoWriteResult | undefined);
+  const applied = repoWriteResult?.appliedChanges ?? [];
+  const changed = repoWriteResult?.filesChanged ?? [];
+  const filePaths = (applied.length > 0 ? applied : changed).map((c: { path: string }) => c.path);
+
+  // 审查意见要求补测试时，推导并加入测试文件路径
+  const needsTests = (review.findings ?? []).filter((f) =>
+    f.detail?.includes("测试") || f.title?.includes("测试") || f.recommendation?.includes("测试") || f.detail?.includes("test") || f.title?.includes("test"),
+  );
+  if (needsTests.length > 0) {
+    const codegenPlan = run.steps.find((s) => s.id === "code_generation")?.output as CodeGenerationPlan | undefined;
+    const tasksNeedTests = (codegenPlan?.tasks ?? []).filter((t) => t.testRequired);
+    if (tasksNeedTests.length > 0) {
+      const derived = await deriveMissingTestFiles(run, tasksNeedTests, workspace);
+      for (const dt of derived) {
+        for (const tf of dt.testFiles) {
+          if (!filePaths.includes(tf)) filePaths.push(tf);
+        }
+      }
+    }
+  }
+
+  if (filePaths.length === 0) throw new Error("No changed files to fix.");
+
+  const workspaceRoot = path.resolve(workspace.workspaceDir);
+  const patches: NonNullable<CodeGenerationPlan["patches"]> = [];
+
+  for (const relativePath of filePaths) {
+    assertSafeWorkspacePath(workspaceRoot, relativePath);
+    const absolutePath = path.resolve(workspaceRoot, relativePath);
+    const exists = existsSync(absolutePath);
+    const originalContent = exists ? await readFile(absolutePath, "utf-8") : "";
+    if (originalContent.length > maxWriterInputChars) continue;
+
+    // 测试文件或新文件：传入全部 findings，不按文件路径过滤
+    const isNewFile = !exists;
+    const findings = isNewFile
+      ? (review.findings ?? [])
+      : (review.findings ?? []).filter((f) => f.file === relativePath || !f.file);
+
+    const result = await callCodeWriterText([
+      {
+        role: "system",
+        content: [
+          "你是代码审查修复 Agent。只修复审查意见中列出的问题，不要引入无关重构。",
+          "优先修复 blocker/major，再处理 minor/nit。必须保持现有功能和样式不被破坏。",
+          isNewFile ? "当前目标文件是新增测试文件。根据审查意见（如缺少测试覆盖），创建覆盖关键验收场景和边界条件的单元测试。" : "若审查意见要求补测试，必须创建或修改对应测试文件。",
+          "不得修改与审查意见无关的文件。",
+          `输出必须以独立一行 ${codeWriterBeginMarker} 开始，以独立一行 ${codeWriterEndMarker} 结束。`,
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({ relativePath, originalContent, findings, role: isNewFile ? "new-test" : "fix" }),
+      },
+    ], relativePath);
+
+    if (result !== originalContent) {
+      patches.push({ path: relativePath, changeType: isNewFile ? "created" : "modified", content: result });
+    }
+  }
+
+  if (patches.length === 0) throw new Error("代码审查修复未产生任何文件变更");
+
+  return tryApplyCodegenPatches(run, {
+    strategy: "代码审查修复",
+    tasks: [],
+    patches,
+  }, { allowOverwrite: true });
+}
+
+export { runCodeReviewFixAgent };
 
 async function runCodeWriterFromPlan(
   run: WorkflowRun,
@@ -628,7 +727,8 @@ async function callCodeWriterText(
             lastError,
             `请重新输出 ${relativePath} 的完整文件内容。`,
             `必须以独立一行 ${codeWriterBeginMarker} 开始，以独立一行 ${codeWriterEndMarker} 结束。`,
-            "不要输出 Markdown 代码块、JSON、解释或边界标记之外的任何字符。",
+            "不要输出 unified diff、patch、Markdown 代码块、JSON、解释或边界标记之外的任何字符。",
+            "边界标记中间只能是最终文件源码本身，不能包含 diff --git、@@、---、+++、行首 + / - 的补丁文本。",
           ].join("\n"),
         },
       ];
@@ -669,7 +769,23 @@ function extractCodeWriterContent(rawContent: string, relativePath: string) {
   else if (content.startsWith("\n")) content = content.slice(1);
   if (content.endsWith("\r\n")) content = content.slice(0, -2);
   else if (content.endsWith("\n")) content = content.slice(0, -1);
+  assertCodeWriterReturnedFileContent(content, relativePath);
   return content;
+}
+
+function assertCodeWriterReturnedFileContent(content: string, relativePath: string) {
+  const lines = content.split(/\r?\n/);
+  const nonEmpty = lines.filter((line) => line.trim().length > 0);
+  const hasDiffHeader = nonEmpty.some((line) => /^diff --git\s+a\//.test(line));
+  const hasFileHeaders = nonEmpty.some((line) => /^---\s+(?:a\/|\/dev\/null)/.test(line))
+    && nonEmpty.some((line) => /^\+\+\+\s+(?:b\/|\/dev\/null)/.test(line));
+  const hasHunk = nonEmpty.some((line) => /^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@/.test(line));
+  const patchPrefixedLines = nonEmpty.filter((line) => /^[+-](?![+-]{2}\s)/.test(line)).length;
+  const mostlyPatchLines = nonEmpty.length >= 8 && patchPrefixedLines / nonEmpty.length > 0.45;
+
+  if (hasDiffHeader || (hasFileHeaders && hasHunk) || (hasHunk && mostlyPatchLines)) {
+    throw new Error(`代码写入返回的是 diff/patch,不是完整文件内容: ${relativePath}`);
+  }
 }
 
 function assertSafeWorkspacePath(workspaceRoot: string, relativePath: string) {

@@ -235,6 +235,17 @@ workflowRoutes.post("/:runId/replay", (req, res) => {
   }
 });
 
+// ---- Code Review Repair -------------------------------------------------------
+
+workflowRoutes.post("/:runId/steps/code_review/repair", async (req, res) => {
+  try {
+    const { repairCodeReviewAndRerun } = await import("../services/workflowService.js");
+    res.json(enrichWithSkill(await repairCodeReviewAndRerun(req.params.runId)));
+  } catch (error) {
+    res.status(500).json({ message: error instanceof Error ? error.message : "修复失败" });
+  }
+});
+
 // ---- Step history ------------------------------------------------------------
 
 workflowRoutes.get("/:runId/steps/:stepId/history", (req, res) => {

@@ -12,6 +12,7 @@ import {
   getWorkflowRun,
   openWorkspace,
   replayWorkflowFrom,
+  repairCodeReview,
   restoreStepSnapshot,
   runWorkflowStep,
   subscribeWorkflowRun,
@@ -131,6 +132,61 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function getCodeGenerationTaskTestFiles(task: CodeGenerationPlan["tasks"][number]) {
   return (task as { testFiles?: string[] }).testFiles ?? [];
+}
+
+type VerificationCommand = NonNullable<VerificationResult["commands"]>[number];
+
+function isRealVerificationCommand(command: VerificationCommand) {
+  return command.status !== "not_configured" && command.status !== "skipped";
+}
+
+function getRealVerificationCommands(verification?: VerificationResult) {
+  return (verification?.commands ?? []).filter(isRealVerificationCommand);
+}
+
+function formatVerificationCommandLabel(label: VerificationCommand["label"]) {
+  switch (label) {
+    case "typecheck":
+      return "类型检查";
+    case "lint":
+      return "ESLint";
+    case "unit_tests":
+      return "单元测试";
+    case "build":
+      return "构建";
+    default:
+      return "自定义检查";
+  }
+}
+
+function VerificationCommandList({ commands }: { commands: VerificationCommand[] }) {
+  if (commands.length === 0) {
+    return <p className="patch-empty-row">未检测到可执行质量门禁，当前阶段默认放行。</p>;
+  }
+
+  return (
+    <div className="verification-command-list">
+      {commands.map((command, index) => {
+        const failed = command.status === "failed" || command.status === "not_executed";
+        const output = command.stderrPreview.trim() || command.stdoutPreview.trim();
+        return (
+          <article className={`verification-command ${failed ? "verification-command--failed" : ""}`} key={`${command.label}-${index}`}>
+            <div className="verification-command__header">
+              <strong>{formatVerificationCommandLabel(command.label)}</strong>
+              <Tag color={failed ? "error" : "success"} variant="outlined">{formatRuntimeStatusValue(command.status)}</Tag>
+            </div>
+            <div className="verification-command__meta">
+              <span>{command.command}</span>
+              <span>exit {command.exitCode ?? "-"}</span>
+              <span>{formatDuration(command.durationMs)}</span>
+            </div>
+            <Typography.Text className="verification-command__cwd" ellipsis>{command.cwd}</Typography.Text>
+            {output ? <pre className="verification-command__output">{output}</pre> : null}
+          </article>
+        );
+      })}
+    </div>
+  );
 }
 
 function renderStepSummary(step: StepRun) {
@@ -325,28 +381,29 @@ function renderStepSummary(step: StepRun) {
     }
     case "verification": {
       const result = value as VerificationResult;
-      if (!result.lint || !Array.isArray(result.testSuites)) {
+      const realCommands = getRealVerificationCommands(result);
+      if (realCommands.length === 0 && (!result.testSuites || result.testSuites.length === 0)) {
         return <EmptyStepSummary step={step} />;
       }
       return (
         <div className="step-summary">
-          <SummaryCard title="质量门">
-            <div className="workbench__meta">
-              <span>Lint {formatRuntimeStatusValue(result.lint)}</span>
-              <span>单测 {formatRuntimeStatusValue(result.unitTests)}</span>
-              <span>覆盖率 {result.coverage}%</span>
-            </div>
-          </SummaryCard>
-          <SummaryCard title="测试套件">
-            <ul className="step-summary__list">
-              {result.testSuites.map((suite) => (
-                <li key={suite.name}>
-                  <strong>{suite.name}</strong>
-                  <small>{formatRuntimeStatusValue(suite.status)} · {suite.durationMs}ms</small>
-                </li>
-              ))}
-            </ul>
-          </SummaryCard>
+          {realCommands.length > 0 && (
+            <SummaryCard title="质量门禁">
+              <VerificationCommandList commands={realCommands} />
+            </SummaryCard>
+          )}
+          {result.testSuites && result.testSuites.length > 0 && (
+            <SummaryCard title="测试套件">
+              <ul className="step-summary__list">
+                {result.testSuites.map((suite) => (
+                  <li key={suite.name}>
+                    <strong>{suite.name}</strong>
+                    <small>{formatRuntimeStatusValue(suite.status)} · {suite.durationMs}ms</small>
+                  </li>
+                ))}
+              </ul>
+            </SummaryCard>
+          )}
         </div>
       );
     }
@@ -374,7 +431,7 @@ function renderStepSummary(step: StepRun) {
               <ul className="step-summary__list">
                 {findings.map((f) => (
                   <li key={f.id}>
-                    <Tag color={f.severity === "blocker" ? "red" : f.severity === "major" ? "orange" : f.severity === "minor" ? "blue" : "default"}>{f.severity}</Tag>
+                    <Tag color={getCodeReviewSeverityColor(f.severity)}>{f.severity}</Tag>
                     <strong>{f.title}</strong>
                     <small>{f.detail}{f.file ? ` · ${f.file}${f.line ? `:${f.line}` : ""}` : ""}</small>
                   </li>
@@ -432,44 +489,112 @@ const runtimeStatusColors: Record<RuntimeStatus, string> = {
   paused: "default",
 };
 
-const runtimeStateCopy: Record<RuntimeStatus, { eyebrow: string; title: string; description: string; cta: string }> = {
+type RuntimeBannerCopy = { eyebrow: string; title: string; description: string };
+
+const runtimeStateCopy: Record<RuntimeStatus, RuntimeBannerCopy> = {
   waiting: {
     eyebrow: "待开始",
     title: "当前阶段等待处理",
     description: "AI 会生成结构化产出，并把结果传递给后续阶段。",
-    cta: "运行当前阶段",
   },
   running: {
     eyebrow: "处理中",
     title: "AI 正在处理",
     description: "当前阶段正在生成结果。完成后会自动更新到当前工作区。",
-    cta: "AI 正在处理",
   },
   blocked: {
     eyebrow: "需要确认",
     title: "需要你确认决策",
     description: "请确认 AI 当前理解，或补充反馈后交给 AI 继续处理。",
-    cta: "确认并继续",
   },
   success: {
     eyebrow: "已完成",
     title: "当前阶段已完成",
     description: "产出已保存，可继续查看下一阶段或从此处回放。",
-    cta: "查看下一步",
   },
   failed: {
     eyebrow: "失败",
     title: "当前阶段失败",
     description: "先查看失败原因，再选择重试或补充约束。",
-    cta: "重试当前阶段",
   },
   paused: {
     eyebrow: "运行已暂停",
     title: "当前交付已暂停",
     description: "选择阶段继续运行、重放或查看历史输出。",
-    cta: "恢复运行",
   },
 };
+
+const stepBannerCopy: Partial<Record<WorkflowStepId, Partial<Record<RuntimeStatus, RuntimeBannerCopy>>>> = {
+  requirement_intake: {
+    waiting: { eyebrow: "等待接收", title: "等待接收需求", description: "提交任务后，AI 会先把原始描述整理为交付标题、范围和初始上下文。" },
+    running: { eyebrow: "正在整理", title: "正在接收需求", description: "正在把你的原始描述压缩为一句任务标题，并识别交付范围。" },
+    blocked: { eyebrow: "需要确认", title: "请确认任务入口", description: "确认任务标题、范围和输入是否准确，再进入需求确认。" },
+    success: { eyebrow: "已接收", title: "需求已接收", description: "任务入口已整理完成，后续阶段会基于这份需求继续推进。" },
+    failed: { eyebrow: "接收失败", title: "接收需求失败", description: "需求入口未生成，请检查失败原因后重试。" },
+  },
+  clarification: {
+    waiting: { eyebrow: "等待确认", title: "等待确认需求", description: "AI 会把目标、约束和验收标准整理为可执行决策。" },
+    running: { eyebrow: "正在确认", title: "正在确认需求", description: "正在提炼用户故事、验收标准和需要你决策的问题。" },
+    blocked: { eyebrow: "需要确认", title: "请确认需求决策", description: "逐项确认 AI 的理解，必要时补充反馈后继续。" },
+    success: { eyebrow: "已确认", title: "需求已确认", description: "关键约束已经沉淀，后续方案会沿用这些决策。" },
+    failed: { eyebrow: "确认失败", title: "确认需求失败", description: "需求确认未完成，请查看失败原因后重试。" },
+  },
+  solution_design: {
+    waiting: { eyebrow: "等待方案", title: "等待生成方案", description: "需求确认后，AI 会拆解实现路径和验收策略。" },
+    running: { eyebrow: "正在设计", title: "正在生成方案", description: "正在把需求拆成实现策略、验收标准和风险假设。" },
+    blocked: { eyebrow: "需要审核", title: "请审核交付方案", description: "确认方案是否符合目标，或补充约束后重新生成。" },
+    success: { eyebrow: "方案完成", title: "交付方案已生成", description: "方案已保存，下一步会定位代码和影响模块。" },
+    failed: { eyebrow: "方案失败", title: "生成方案失败", description: "方案未生成，请查看失败原因后重试。" },
+  },
+  module_mapping: {
+    waiting: { eyebrow: "等待定位", title: "等待定位代码", description: "方案完成后，AI 会查找需要修改的模块和文件。" },
+    running: { eyebrow: "正在定位", title: "正在定位代码", description: "正在分析项目结构，匹配实现文件、测试文件和相关上下文。" },
+    blocked: { eyebrow: "需要复核", title: "请复核代码定位", description: "确认影响文件是否合理，或补充你知道的入口与边界。" },
+    success: { eyebrow: "已定位", title: "代码位置已确认", description: "相关模块和文件已定位，下一步会进入代码生成。" },
+    failed: { eyebrow: "定位失败", title: "定位代码失败", description: "代码定位未完成，请检查仓库上下文或重试。" },
+  },
+  code_generation: {
+    waiting: { eyebrow: "等待生成", title: "等待生成代码", description: "上游阶段完成后会进入代码生成。" },
+    running: { eyebrow: "正在执行", title: "正在生成代码", description: "完成后必须展示可审查的文件 diff。" },
+    blocked: { eyebrow: "待审核", title: "请确认生成的代码", description: "你可以审查文件 diff，补充反馈，或从阶段条继续。" },
+    success: { eyebrow: "已完成", title: "代码已生成", description: "请审查变更文件和真实 diff。" },
+    failed: { eyebrow: "执行失败", title: "生成代码失败", description: "" },
+    paused: { eyebrow: "已暂停", title: "生成代码已暂停", description: "" },
+  },
+  code_review: {
+    waiting: { eyebrow: "等待审查", title: "等待代码审查", description: "代码生成后，AI 会基于真实 diff 做一次交付前审查。" },
+    running: { eyebrow: "正在审查", title: "正在审查代码", description: "正在检查功能正确性、风险、测试覆盖和可维护性。" },
+    blocked: { eyebrow: "需要处理", title: "代码审查发现问题", description: "你可以按审查意见修复并复审，也可以选择继续推进。" },
+    success: { eyebrow: "审查完成", title: "代码审查已通过", description: "审查结论已保存，可继续进入质量门禁。" },
+    failed: { eyebrow: "审查失败", title: "代码审查失败", description: "审查未完成，请查看失败原因后重试。" },
+  },
+  verification: {
+    waiting: { eyebrow: "等待验证", title: "等待质量门禁检查", description: "代码审查完成后，会执行项目中真实可用的 lint、测试、构建或类型检查命令。" },
+    running: { eyebrow: "正在验证", title: "正在执行质量门禁检查", description: "系统正在运行真实命令，结果会显示命令、退出码和输出摘要。" },
+    blocked: { eyebrow: "需要复核", title: "质量门禁需要处理", description: "至少一个真实检查未通过，请查看命令输出后决定修复或继续。" },
+    success: { eyebrow: "验证通过", title: "结果检查已完成", description: "真实检查结果已记录，可继续提交 PR。" },
+    failed: { eyebrow: "验证失败", title: "质量门禁失败", description: "验证命令执行失败，请查看命令输出后重试。" },
+  },
+  pull_request: {
+    waiting: { eyebrow: "等待提交", title: "等待提交 PR", description: "验证完成后，AI 会生成分支名和 Commit 信息供你确认。" },
+    running: { eyebrow: "正在提交", title: "正在提交 Pull Request", description: "系统正在创建或切换分支、提交变更、推送并创建 GitHub PR。" },
+    blocked: { eyebrow: "需要确认", title: "请确认 PR 信息", description: "确认分支名和 Commit 信息后继续，系统会自动推送并创建 PR。" },
+    success: { eyebrow: "PR 已提交", title: "提交 PR 已完成", description: "分支、Commit 和 PR 信息已生成，可查看链接或继续审阅结果。" },
+    failed: { eyebrow: "提交失败", title: "提交 PR 失败", description: "提交、推送或创建 PR 失败，请查看原因后重试。" },
+  },
+  repo_write: {
+    waiting: { eyebrow: "等待生成", title: "等待生成代码", description: "上游阶段完成后会进入代码生成。" },
+    running: { eyebrow: "正在执行", title: "AI 正在生成代码", description: "完成后必须展示可审查的文件 diff。" },
+    blocked: { eyebrow: "待审核", title: "请确认生成的代码", description: "你可以审查文件 diff，补充反馈，或从阶段条继续。" },
+    success: { eyebrow: "已完成", title: "代码已生成", description: "请审查变更文件和真实 diff。" },
+    failed: { eyebrow: "执行失败", title: "生成代码失败", description: "" },
+    paused: { eyebrow: "已暂停", title: "生成代码已暂停", description: "" },
+  },
+};
+
+function getRuntimeBannerCopy(step: StepRun, status: RuntimeStatus) {
+  return stepBannerCopy[step.id]?.[status] ?? runtimeStateCopy[status];
+}
 
 function formatRuntimeStatusValue(value?: string) {
   if (!value) return "等待中";
@@ -612,6 +737,27 @@ function canReplayStep(stepId: WorkflowStepId) {
   return stepId !== "requirement_intake";
 }
 
+function codeReviewNeedsRepair(step: StepRun): boolean {
+  if (step.id !== "code_review" || !step.output) return false;
+  const r = step.output as Record<string, unknown>;
+  return r.decision === "request-changes";
+}
+
+function getCodeReviewSeverityColor(severity: string) {
+  switch (severity) {
+    case "blocker":
+      return "red";
+    case "major":
+      return "orange";
+    case "minor":
+      return "blue";
+    case "nit":
+      return "cyan";
+    default:
+      return "default";
+  }
+}
+
 function RuntimeTimeline({
   steps,
   activeStepId,
@@ -684,7 +830,9 @@ function StepProgress({
   activeStepId,
   activeStatus,
   continueCueStepId,
+  needsRepair,
   onSelect,
+  onRepair,
   onReplay,
   onContinue,
 }: {
@@ -692,7 +840,9 @@ function StepProgress({
   activeStepId: WorkflowStepId;
   activeStatus: RuntimeStatus;
   continueCueStepId?: WorkflowStepId | null;
+  needsRepair?: boolean;
   onSelect: (stepId: WorkflowStepId) => void;
+  onRepair: (stepId: WorkflowStepId) => void;
   onReplay: (stepId: WorkflowStepId) => void;
   onContinue: (stepId: WorkflowStepId) => void;
 }) {
@@ -718,6 +868,7 @@ function StepProgress({
           const canContinue = !disabled && ["waiting", "blocked", "failed", "paused"].includes(status);
           const replayable = canReplayStep(step.id);
           const shouldCueContinue = canContinue && continueCueStepId === step.id;
+          const repairActive = Boolean(needsRepair && active && canContinue);
           return (
             <div
               aria-disabled={disabled || undefined}
@@ -741,7 +892,21 @@ function StepProgress({
                 <strong>{formatStepLabel(step.label)}</strong>
               </span>
               <span className="task-stepper__actions">
-                {replayable ? (
+                {repairActive ? (
+                  <Button
+                    aria-label={`按审查意见修复并复审 ${formatStepLabel(step.label)}`}
+                    className="task-stepper__action task-stepper__repair task-stepper__action--available task-stepper__repair--cue"
+                    size="small"
+                    title="按审查意见修复并重新审查"
+                    type="text"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRepair(step.id);
+                    }}
+                  >
+                    <img className="task-stepper__action-icon" src={stageReplayIcon} alt="" aria-hidden="true" />
+                  </Button>
+                ) : replayable ? (
                   <Button
                     aria-label={`从 ${formatStepLabel(step.label)} 重放`}
                     className={`task-stepper__action task-stepper__replay ${canShowActions ? "task-stepper__action--available" : ""}`}
@@ -760,7 +925,7 @@ function StepProgress({
                 {canContinue ? (
                   <Button
                     aria-label={`继续 ${formatStepLabel(step.label)}`}
-                    className={`task-stepper__action task-stepper__continue task-stepper__action--available ${shouldCueContinue ? "task-stepper__continue--cue" : ""}`}
+                    className={`task-stepper__action task-stepper__continue task-stepper__action--available ${!repairActive && shouldCueContinue ? "task-stepper__continue--cue" : ""}`}
                     size="small"
                     title={`继续 ${formatStepLabel(step.label)}`}
                     type="text"
@@ -1464,15 +1629,6 @@ function getDisplayActiveStep(run: WorkflowRun, displaySteps: DisplayStep[]): Di
 
 // ---- CodeDeliveryWorkspace: 合并展示组件 ----
 
-const codeDeliveryBanner = {
-  running: { eyebrow: "正在执行", title: "AI 正在生成代码", description: "完成后必须展示可审查的文件 diff。" },
-  blocked: { eyebrow: "待审核", title: "请确认生成的代码", description: "你可以审查文件 diff，补充反馈，或从阶段条继续。" },
-  success: { eyebrow: "已完成", title: "代码已生成", description: "请审查变更文件和真实 diff。" },
-  failed: { eyebrow: "执行失败", title: "生成代码失败", description: "" },
-  waiting: { eyebrow: "等待执行", title: "等待生成代码", description: "上游阶段完成后会进入代码生成。" },
-  paused: { eyebrow: "已暂停", title: "生成代码已暂停", description: "" },
-};
-
 function CodeDeliveryWorkspace({
   codegenStep,
   repoWriteStep,
@@ -1498,7 +1654,7 @@ function CodeDeliveryWorkspace({
   const totalAdditions = files.reduce((s, f) => s + f.additions, 0);
   const totalDeletions = files.reduce((s, f) => s + f.deletions, 0);
   const hasRealDiff = files.some((file) => Boolean(file.contentPreview?.trim()) || file.additions > 0 || file.deletions > 0);
-  const baseCopy = codeDeliveryBanner[status] ?? codeDeliveryBanner.waiting;
+  const baseCopy = getRuntimeBannerCopy(codegenStep, status);
   const copy = status === "blocked" || status === "success"
     ? hasRealDiff
       ? baseCopy
@@ -1517,7 +1673,7 @@ function CodeDeliveryWorkspace({
       <div className={`runtime-state-layout runtime-state-layout--${status}`}>
         <section className={`runtime-state-banner runtime-state-banner--${status}`}>
           <div>
-            <span>生成代码 · {copy.eyebrow}</span>
+            <span>{formatStepLabel(codegenStep.label)} · {copy.eyebrow}</span>
             <h2>{copy.title}</h2>
             <p>{status === "failed" && failureReason ? `原因：${failureReason}` : copy.description}</p>
           </div>
@@ -1530,7 +1686,7 @@ function CodeDeliveryWorkspace({
     <div className={`runtime-state-layout runtime-state-layout--${status}`}>
       <section className={`runtime-state-banner runtime-state-banner--${status}`}>
         <div>
-          <span>生成代码 · {copy.eyebrow}</span>
+          <span>{formatStepLabel(codegenStep.label)} · {copy.eyebrow}</span>
           <h2>{copy.title}</h2>
           <p>{copy.description}</p>
         </div>
@@ -1694,8 +1850,11 @@ function highlightCodeLine(line: string) {
   });
 }
 
-function getPreviewLineTone(line: string, file: ChangedFileEntry): "added" | "deleted" | "context" | "meta" {
-  if (/^(diff --git|index |@@|--- |\+\+\+ )/.test(line)) return "meta";
+function isDiffMetadataLine(line: string) {
+  return /^(diff --git|index |--- |\+\+\+ )/.test(line);
+}
+
+function getPreviewLineTone(line: string, file: ChangedFileEntry): "added" | "deleted" | "context" {
   if (line.startsWith("+") && !line.startsWith("+++")) return "added";
   if (line.startsWith("-") && !line.startsWith("---")) return "deleted";
   if (file.changeType === "deleted") return "deleted";
@@ -1722,7 +1881,11 @@ function getDiffPreviewLines(content: string, file: ChangedFileEntry) {
     if (hunk) {
       oldLine = Number(hunk[1]);
       newLine = Number(hunk[2]);
-      return { key: `${index}-${text}`, text, tone: "meta" as const };
+      return null;
+    }
+
+    if (isDiffMetadataLine(text)) {
+      return null;
     }
 
     const tone = getPreviewLineTone(text, file);
@@ -1732,18 +1895,31 @@ function getDiffPreviewLines(content: string, file: ChangedFileEntry) {
     if (tone === "deleted") {
       return { key: `${index}-${text}`, oldLine: oldLine++, text, tone };
     }
-    if (tone === "meta") {
-      return { key: `${index}-${text}`, text, tone };
-    }
-
     return { key: `${index}-${text}`, oldLine: oldLine++, newLine: newLine++, text, tone };
-  });
+  }).filter((line): line is NonNullable<typeof line> => line !== null);
+}
+
+function isNestedPatchDiffPreview(content: string) {
+  return content.split(/\r?\n/).some((line) =>
+    /^[+-](?:diff --git|---\s|\+\+\+\s|@@\s+-\d)/.test(line),
+  );
 }
 
 function FileContentPreview({ file }: { file: ChangedFileEntry }) {
   const content = file.contentPreview;
   if (!content?.trim()) {
     return <p className="patch-file-preview__empty">当前结果没有提供内容预览；可在本地 git diff 中查看完整变更。</p>;
+  }
+  if (isNestedPatchDiffPreview(content)) {
+    return (
+      <Alert
+        className="patch-file-preview__alert"
+        message="检测到异常 diff"
+        description="当前文件内容疑似被写成了 patch/diff 文本，而不是最终源码。请从生成代码阶段重试，系统会拒绝继续写入这种结果。"
+        showIcon
+        type="error"
+      />
+    );
   }
 
   const lines = getDiffPreviewLines(content, file);
@@ -1757,18 +1933,6 @@ function FileContentPreview({ file }: { file: ChangedFileEntry }) {
         </div>
       ))}
     </div>
-  );
-}
-
-function ChecklistItem({ content, warning = false }: { content: string; warning?: boolean }) {
-  const summary = content.replace(/^已/, "").replace(/，.*/, "");
-  return (
-    <Tooltip title={content}>
-      <li className={`review-check-item ${warning ? "review-check-item--warning" : ""}`}>
-        <span>{warning ? "!" : "✓"}</span>
-        <Typography.Text ellipsis>{summary}</Typography.Text>
-      </li>
-    </Tooltip>
   );
 }
 
@@ -1790,17 +1954,36 @@ function PatchReviewWorkspace({
     : repoResult?.mode === "planned"
       ? "等待手动落盘"
       : "等待生成";
-  const checklist = step.id === "pull_request" && isRecord(step.output) && Array.isArray((step.output as PullRequestResult).checklist)
-    ? (step.output as PullRequestResult).checklist
-    : [];
-  const passedChecks = checklist.filter((c) => c.includes("pass") || c.includes("通过")).length;
-  const riskSummary = verification && verification.lint === "passed" && verification.unitTests === "passed"
-    ? "无关键风险"
-    : verification
-      ? "质量门需要复核"
-      : "等待质量门";
-  const hasQualityWarning = Boolean(verification && (verification.lint !== "passed" || verification.unitTests !== "passed"));
-  const checksRequiringReview = hasQualityWarning ? 1 : 0;
+  const verificationCommands = getRealVerificationCommands(verification);
+  const failedVerificationCommands = verificationCommands.filter((command) => command.status === "failed" || command.status === "not_executed");
+  const passedVerificationCommands = verificationCommands.filter((command) => command.status === "passed");
+  const verificationPanel = verificationCommands.length > 0 ? (
+    <section className="patch-section patch-section--verification">
+      <div className="quality-gate-strip">
+        {verificationCommands.map((command, index) => (
+          <span
+            className={command.status === "failed" || command.status === "not_executed" ? "quality-gate-strip__item quality-gate-strip__item--failed" : "quality-gate-strip__item"}
+            key={`${command.label}-${index}`}
+          >
+            {formatVerificationCommandLabel(command.label)} {formatRuntimeStatusValue(command.status)}
+          </span>
+        ))}
+      </div>
+      <Collapse
+        className="patch-disclosure"
+        defaultActiveKey={failedVerificationCommands.length > 0 ? ["commands"] : []}
+        items={[
+          {
+            key: "commands",
+            label: failedVerificationCommands.length > 0
+              ? `${failedVerificationCommands.length} 项门禁失败 · ${passedVerificationCommands.length} 项通过`
+              : `${passedVerificationCommands.length} 项门禁通过`,
+            children: <VerificationCommandList commands={verificationCommands} />,
+          },
+        ]}
+      />
+    </section>
+  ) : null;
   const overviewPanel = (
     <section className="patch-section patch-section--overview">
       <div className="patch-overview-flow">
@@ -1848,55 +2031,13 @@ function PatchReviewWorkspace({
       </div>
     </section>
   );
-  const verificationPanel = (
-    <section className="patch-section patch-section--verification">
-      <div className="quality-gate-strip">
-        <span className={verification?.lint === "failed" ? "quality-gate-strip__item quality-gate-strip__item--failed" : "quality-gate-strip__item"}>
-          Lint {formatRuntimeStatusValue(verification?.lint)}
-        </span>
-        <span className={verification?.unitTests === "failed" ? "quality-gate-strip__item quality-gate-strip__item--failed" : "quality-gate-strip__item"}>
-          单测 {formatRuntimeStatusValue(verification?.unitTests)}
-        </span>
-        <span className={(verification?.coverage ?? 0) <= 0 ? "quality-gate-strip__item quality-gate-strip__item--warning" : "quality-gate-strip__item"}>
-          覆盖率 {verification?.coverage ?? 0}%
-        </span>
-      </div>
-      <Collapse
-        className="patch-disclosure"
-        defaultActiveKey={[]}
-        items={[
-          {
-            key: "checklist",
-            label: checksRequiringReview ? `${passedChecks} 项检查通过 · ${checksRequiringReview} 项需要复核` : `${passedChecks} 项检查通过`,
-            children: (
-              <ul className="review-check-list">
-                {checklist.length ? checklist.map((item) => <ChecklistItem content={item} key={item} />) : <li className="patch-empty-row">等待 PR 助手生成审查清单。</li>}
-                {hasQualityWarning ? <ChecklistItem content={`覆盖率仍为 ${verification?.coverage ?? 0}%`} warning /> : null}
-              </ul>
-            ),
-          },
-          {
-            key: "risk",
-            label: riskSummary,
-            children: (
-              <div className="risk-summary-flow">
-                <p>{verification ? `Lint ${formatRuntimeStatusValue(verification.lint)} · 单测 ${formatRuntimeStatusValue(verification.unitTests)}` : "等待验证器输出 Lint / 单测 / 风险摘要。"}</p>
-                <p>{verification ? `覆盖率 ${verification.coverage}% · ${verification.testSuites.length} 个套件` : "覆盖率等待中"}</p>
-              </div>
-            ),
-          },
-        ]}
-      />
-    </section>
-  );
-
   return (
     <section className="patch-workspace">
       <Tabs
         className="patch-workspace__tabs"
         items={[
           { key: "overview", label: "变更概览", children: overviewPanel },
-          { key: "verification", label: "质量门禁", children: verificationPanel },
+          ...(verificationPanel ? [{ key: "verification", label: "质量门禁", children: verificationPanel }] : []),
         ]}
       />
     </section>
@@ -1910,7 +2051,7 @@ function RuntimeStateBanner({
   step: StepRun;
   status: RuntimeStatus;
 }) {
-  const copy = runtimeStateCopy[status];
+  const copy = getRuntimeBannerCopy(step, status);
   const lastLog = step.logs.at(-1);
   const stageLabel = formatStepLabel(step.label);
   const agentLabel = formatAgentName(step.agent);
@@ -2342,27 +2483,24 @@ function StateDrivenWorkspace({
   );
 }
 
-function SkillBadge({ run, step }: { run: WorkflowRun; step: StepRun }) {
-  // 优先从 run 级别读取（API 响应已注入），fallback 到 step output 中的 trace
-  const runReason = run.skillMatchReason;
+type SkillMatchReasonView = NonNullable<WorkflowRun["skillMatchReason"]>;
+
+function getStepSkillTrace(step: StepRun) {
   const trace = (step.output as Record<string, unknown> | undefined)?.runtimeTrace as
     | {
         selectedSkillId?: string;
-        skillMatchReason?: {
-          skillId: string;
-          skillName: string;
-          matchedPattern: string;
-          matchedScope?: string;
-          hitKeywords: string[];
-          hitFileGlobs?: string[];
-          hitFiles?: string[];
-          hitRouteHints?: string[];
-          score?: number;
-        };
+        skillMatchReason?: SkillMatchReasonView;
       }
     | undefined;
-  const skillId = run.selectedSkillId ?? trace?.selectedSkillId;
-  const reason = runReason ?? trace?.skillMatchReason;
+  return trace;
+}
+
+function getSkillMatchDisplay(step: StepRun) {
+  // 只展示当前 step runtimeTrace 里实际注入过的 Skill；
+  // run 级规则匹配只是候选/调试信息，不代表模型真实采用。
+  const trace = getStepSkillTrace(step);
+  const skillId = trace?.selectedSkillId;
+  const reason = trace?.skillMatchReason;
   if (!skillId) return null;
 
   const tooltipLines: string[] = [];
@@ -2377,12 +2515,34 @@ function SkillBadge({ run, step }: { run: WorkflowRun; step: StepRun }) {
     if (reason.score != null) tooltipLines.push(`匹配分数: ${reason.score}`);
   }
 
+  return {
+    skillId,
+    label: reason?.skillName ?? skillId,
+    tooltipLines,
+  };
+}
+
+function SkillBadge({ step }: { step: StepRun }) {
+  const display = getSkillMatchDisplay(step);
+  if (!display) return null;
+
   return (
-    <ContextSection title="命中 Skill">
-      <Tooltip title={tooltipLines.length ? <div>{tooltipLines.map((l, i) => <div key={i}>{l}</div>)}</div> : undefined}>
-        <Tag color="purple">{reason?.skillName ?? skillId}</Tag>
+    <ContextSection title="已注入 Skill">
+      <Tooltip title={display.tooltipLines.length ? <div>{display.tooltipLines.map((l, i) => <div key={i}>{l}</div>)}</div> : undefined}>
+        <Tag color="purple">{display.label}</Tag>
       </Tooltip>
     </ContextSection>
+  );
+}
+
+function SkillHeaderChip({ step }: { step: StepRun }) {
+  const display = getSkillMatchDisplay(step);
+  if (!display) return null;
+
+  return (
+    <Tooltip title={display.tooltipLines.length ? <div>{display.tooltipLines.map((l, i) => <div key={i}>{l}</div>)}</div> : undefined}>
+      <span className="runtime-chip runtime-chip--skill">已注入 Skill · {display.label}</span>
+    </Tooltip>
   );
 }
 
@@ -2408,7 +2568,7 @@ function DynamicSidePanel({
   if (activeStep.id === "clarification" || activeStep.id === "solution_design" || activeStep.id === "requirement_intake") {
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge run={run} step={activeStep} />
+        <SkillBadge step={activeStep} />
         <ContextSection title="需求与确认">
           <Typography.Paragraph>{requirement.rawText}</Typography.Paragraph>
         </ContextSection>
@@ -2441,7 +2601,7 @@ function DynamicSidePanel({
       : [];
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge run={run} step={activeStep} />
+        <SkillBadge step={activeStep} />
         <ContextSection title="上下文定位">
           <InlineList items={files} empty="等待 AI 定位文件后展示代码上下文。" />
         </ContextSection>
@@ -2458,7 +2618,7 @@ function DynamicSidePanel({
   if (activeStep.id === "repo_write") {
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge run={run} step={activeStep} />
+        <SkillBadge step={activeStep} />
         <ContextSection title="代码生成 / 写入">
           <RepositoryChanges repository={repository} result={repoResult} />
         </ContextSection>
@@ -2475,13 +2635,13 @@ function DynamicSidePanel({
   if (activeStep.id === "verification") {
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge run={run} step={activeStep} />
+        <SkillBadge step={activeStep} />
         <ContextSection title="验证器 / 质量门">
           <TestResultPanel result={verification} />
         </ContextSection>
         <ContextSection title="风险摘要">
           <InlineList
-            items={verification ? [`Lint ${formatRuntimeStatusValue(verification.lint)}`, `单测 ${formatRuntimeStatusValue(verification.unitTests)}`, `覆盖率 ${verification.coverage}%`] : []}
+            items={verification ? [`Lint ${formatRuntimeStatusValue(verification.lint)}`, `单测 ${formatRuntimeStatusValue(verification.unitTests)}`] : []}
             empty="等待质量门产出风险摘要。"
           />
         </ContextSection>
@@ -2496,7 +2656,7 @@ function DynamicSidePanel({
     const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
     return (
       <Card className="runtime-panel runtime-context-panel" title="运行上下文" bordered={false}>
-        <SkillBadge run={run} step={activeStep} />
+        <SkillBadge step={activeStep} />
         <ContextSection title="PR 状态">
           <div className="runtime-sidecar-status">
             <Tag color={pr?.status === "ready" ? "success" : "blue"} variant="outlined">{formatRuntimeStatusValue(pr?.status)}</Tag>
@@ -2515,7 +2675,7 @@ function DynamicSidePanel({
           <div className="runtime-sidecar-quality">
             <Tag color={verification?.lint === "failed" ? "error" : "success"} variant="outlined">Lint {formatRuntimeStatusValue(verification?.lint)}</Tag>
             <Tag color={verification?.unitTests === "failed" ? "error" : "success"} variant="outlined">单测 {formatRuntimeStatusValue(verification?.unitTests)}</Tag>
-            <Tag color={(verification?.coverage ?? 0) <= 0 ? "warning" : "success"} variant="outlined">覆盖率 {verification?.coverage ?? 0}%</Tag>
+            {verification?.coverage != null && <Tag color={verification.coverage <= 0 ? "warning" : "success"} variant="outlined">覆盖率 {verification.coverage}%</Tag>}
           </div>
         </ContextSection>
       </Card>
@@ -2524,7 +2684,7 @@ function DynamicSidePanel({
 
   return (
     <Card className="runtime-panel runtime-telemetry-panel" title="执行遥测" bordered={false}>
-      <SkillBadge run={run} step={activeStep} />
+      <SkillBadge step={activeStep} />
       <div className="runtime-telemetry-grid">
         <Statistic title="AI 调用" value={metrics.calls} />
         <Statistic title="上下文 Token" value={formatTokenCount(metrics.inputTokens + metrics.outputTokens)} />
@@ -2589,6 +2749,7 @@ export function WorkbenchPage() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("summary");
   const [chatDraft, setChatDraft] = useState("");
   const [pullRequestDraft, setPullRequestDraft] = useState<PullRequestDraft | null>(null);
+  const [pullRequestDraftDirty, setPullRequestDraftDirty] = useState(false);
   const [hasQuestionFeedback, setHasQuestionFeedback] = useState(false);
   const [continueCueReady, setContinueCueReady] = useState(false);
   const structuredSubmitRef = useRef<(() => void) | null>(null);
@@ -2629,7 +2790,8 @@ export function WorkbenchPage() {
   const shouldCueContinue =
     Boolean(activeStep) &&
     ["blocked", "waiting", "paused"].includes(activeRuntimeStatus) &&
-    (activeRuntimeStatus === "blocked" && activeStep?.id === "clarification" ? continueCueReady : true);
+    (activeRuntimeStatus === "blocked" && activeStep?.id === "clarification" ? continueCueReady : true) &&
+    !(activeStep && codeReviewNeedsRepair(activeStep)); // code_review 不通过时强调修复复审，continue 仍保留但不高亮。
   const metrics = summarizeMetrics(agentMetrics);
   const legacyRepoResult = run ? getStepOutput<RepoWriteResult>(run.steps, "repo_write") : undefined;
   const repoResult = legacyRepoResult ?? getCodeGenerationRepoResult(codegenStep);
@@ -2664,24 +2826,31 @@ export function WorkbenchPage() {
     };
   }
 
+  function updatePullRequestDraft(nextDraft: PullRequestDraft) {
+    setPullRequestDraftDirty(true);
+    setPullRequestDraft(nextDraft);
+  }
+
   useEffect(() => {
     if (!run) {
       setPullRequestDraft(null);
+      setPullRequestDraftDirty(false);
       return;
     }
 
+    setPullRequestDraftDirty(false);
     setPullRequestDraft((current) => current ?? getPullRequestDraftFromRun(run));
   }, [run?.id]);
 
   useEffect(() => {
-    if (!run) return;
+    if (!run || pullRequestDraftDirty) return;
     const output = getStepOutput<PullRequestResult>(run.steps, "pull_request");
     if (!output?.branch && !output?.commitMessage) return;
     setPullRequestDraft({
       branch: output.branch ?? deriveDefaultPullRequestBranch(run),
       commitMessage: output.commitMessage ?? deriveDefaultCommitMessage(run),
     });
-  }, [run?.steps]);
+  }, [run?.steps, pullRequestDraftDirty]);
 
   useEffect(() => {
     let ignore = false;
@@ -2766,8 +2935,7 @@ export function WorkbenchPage() {
     if (!run || !activeStep) return;
     const targetStep = effectiveStep ?? activeStep;
 
-    // pull_request always uses regenerate: Phase 1 runs → draft (waiting-human),
-    // confirm triggers Phase 2 (git + push + create PR) via runWorkflowStep
+    // pull_request always uses regenerate
     const action = targetStep.id === "pull_request"
       ? "run"
       : targetStep.status === "waiting-human" ? "confirm" : "run";
@@ -2776,11 +2944,27 @@ export function WorkbenchPage() {
       const nextRun = action === "confirm"
         ? await confirmWorkflowStep(run.id, targetStep.id)
         : await runWorkflowStep(run.id, targetStep.id, getRunOptionsForStep(targetStep.id));
+      if (targetStep.id === "pull_request") setPullRequestDraftDirty(false);
       setRun(nextRun);
       setAgentMetrics(await getAgentMetrics());
       setErrorMessage("");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "运行阶段失败，请确认后端服务可达。");
+    }
+  }
+
+  async function handleCodeReviewRepair(stepId: WorkflowStepId) {
+    if (!run) return;
+    const step = run.steps.find((item) => item.id === stepId);
+    if (!step || step.id !== "code_review" || !codeReviewNeedsRepair(step)) return;
+
+    try {
+      setErrorMessage("");
+      const nextRun = await repairCodeReview(run.id);
+      setRun(nextRun);
+      setAgentMetrics(await getAgentMetrics());
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "修复失败，请确认后端服务可达。");
     }
   }
 
@@ -2817,9 +3001,10 @@ export function WorkbenchPage() {
     }
 
     try {
-      const nextRun = step.status === "waiting-human"
-        ? await confirmWorkflowStep(run.id, step.id)
-        : await runWorkflowStep(run.id, step.id, getRunOptionsForStep(step.id));
+      const nextRun = step.id === "pull_request" || step.status !== "waiting-human"
+        ? await runWorkflowStep(run.id, step.id, getRunOptionsForStep(step.id))
+        : await confirmWorkflowStep(run.id, step.id);
+      if (step.id === "pull_request") setPullRequestDraftDirty(false);
       setRun(nextRun);
       setAgentMetrics(await getAgentMetrics());
       setErrorMessage("");
@@ -2925,6 +3110,7 @@ export function WorkbenchPage() {
             <span className="runtime-chip">{requirement.pattern}</span>
             <span className="runtime-chip">{repository.name}</span>
             <span className="runtime-chip">{runtimeStatusLabels[activeRuntimeStatus]}</span>
+            <SkillHeaderChip step={activeStep} />
           </div>
         </div>
         <div className="runtime-telemetry-strip runtime-chip-row" id="observability">
@@ -2941,7 +3127,9 @@ export function WorkbenchPage() {
           activeStatus={activeRuntimeStatus}
           activeStepId={(displayActiveStep?.id ?? run.activeStepId) as WorkflowStepId}
           continueCueStepId={shouldCueContinue ? (displayActiveStep?.id ?? run.activeStepId) as WorkflowStepId : null}
+          needsRepair={activeStep ? codeReviewNeedsRepair(activeStep) : false}
           onContinue={(stepId) => handleStepContinue(resolveBackendStepId(stepId, displaySteps, "continue"))}
+          onRepair={(stepId) => handleCodeReviewRepair(resolveBackendStepId(stepId, displaySteps, "continue"))}
           onReplay={(stepId) => handleReplay(resolveBackendStepId(stepId, displaySteps, "replay"))}
           onSelect={(stepId: WorkflowStepId) => {
             const backendId = resolveBackendStepId(stepId, displaySteps, "select");
@@ -2993,11 +3181,11 @@ export function WorkbenchPage() {
                 hasPendingFeedback && chatDraft.trim()
                   ? completeCurrentStep
                   : activeRuntimeStatus === "blocked"
-                    ? () => runWorkflowStep(run.id, activeStep.id, getRunOptionsForStep(activeStep.id)).then(setRun).catch(() => undefined)
+                    ? completeCurrentStep
                     : undefined
               }
               onWorkspaceViewChange={setWorkspaceView}
-              onPullRequestDraftChange={setPullRequestDraft}
+              onPullRequestDraftChange={updatePullRequestDraft}
               pullRequestDraft={pullRequestDraft ?? undefined}
               repoResult={repoResult}
               running={activeRuntimeStatus === "running"}

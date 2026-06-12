@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Alert, Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space, Tabs, Tag, Typography, message } from "antd";
+import { Button, Form, Input, Modal, Select, Space, Tabs, Typography, message } from "antd";
 import { createJsonSkill, updateJsonSkill, type SkillManifest } from "../../api/client";
 import type { WorkflowStepId } from "../../features/workflow/types";
 import { stepLabels } from "../../features/workflow/stepDefinitions";
@@ -27,6 +27,10 @@ type FormValues = {
   // per-step fields are collected from the form
 };
 
+function normalizeTagValues(values: string[] | undefined): string[] {
+  return Array.from(new Set((values ?? []).map((value) => value.trim()).filter(Boolean)));
+}
+
 function manifestToForm(skill: SkillManifest | null): FormValues {
   if (!skill) return {
     id: "", name: "", description: "", version: "1.0.0",
@@ -39,8 +43,8 @@ function manifestToForm(skill: SkillManifest | null): FormValues {
     name: skill.name,
     description: (skill as { description?: string }).description ?? "",
     version: skill.version,
-    requirementPatterns: [...skill.requirementPatterns],
-    scopes: [...skill.scopes],
+    requirementPatterns: normalizeTagValues(skill.requirementPatterns),
+    scopes: normalizeTagValues(skill.scopes),
     fileGlobs: (skill.match.fileGlobs ?? []).join("\n"),
     routeHints: (skill.match.routeHints ?? []).join("\n"),
     keywords: (skill.match.keywords ?? []).join(", "),
@@ -64,8 +68,8 @@ function formToManifest(values: FormValues, existingSteps?: Record<string, unkno
     name: values.name,
     description: values.description || undefined,
     version: values.version,
-    requirementPatterns: values.requirementPatterns ?? [],
-    scopes: values.scopes ?? [],
+    requirementPatterns: normalizeTagValues(values.requirementPatterns),
+    scopes: normalizeTagValues(values.scopes),
     match: {
       keywords: (values.keywords ?? "").split(/[,;\n]+/).map((k) => k.trim()).filter(Boolean),
       fileGlobs: (values.fileGlobs ?? "").split("\n").map((g) => g.trim()).filter(Boolean),
@@ -78,7 +82,6 @@ function formToManifest(values: FormValues, existingSteps?: Record<string, unkno
 export function SkillEditorModal({ open, editingSkill, onClose }: SkillEditorProps) {
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
-  const [jsonPreview, setJsonPreview] = useState(false);
   const isCreate = !editingSkill;
 
   useEffect(() => {
@@ -140,60 +143,72 @@ export function SkillEditorModal({ open, editingSkill, onClose }: SkillEditorPro
       destroyOnClose
     >
       <Form form={form} layout="vertical" onFinish={handleSubmit} initialValues={manifestToForm(editingSkill)}>
-        <Space style={{ width: "100%", justifyContent: "space-between" }}>
-          <Form.Item name="id" label="ID" rules={[{ required: true, pattern: /^[a-z0-9][-a-z0-9]*[a-z0-9]?$/i, message: "slug 格式" }]} style={{ flex: 1 }}>
-            <Input disabled={!isCreate} placeholder="my-skill-id" />
-          </Form.Item>
-          <Form.Item name="version" label="Version" initialValue="1.0.0" style={{ width: 100 }}>
-            <Input placeholder="1.0.0" />
-          </Form.Item>
-        </Space>
-        <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-          <Input placeholder="Skill 名称" />
-        </Form.Item>
-        <Form.Item name="description" label="描述">
-          <TextArea rows={2} placeholder="简要描述该 Skill 的用途" />
-        </Form.Item>
-        <Form.Item name="requirementPatterns" label="需求模式">
-          <Select mode="multiple" options={patternOptions} placeholder="选择适用的需求模式" />
-        </Form.Item>
-        <Form.Item name="scopes" label="技术范围">
-          <Select mode="multiple" options={scopeOptions} placeholder="选择适用的技术范围" />
-        </Form.Item>
-        <Form.Item name="selectedSteps" label="影响步骤">
-          <Select mode="multiple" options={stepOptions} placeholder="选择该 Skill 影响的 workflow step" />
-        </Form.Item>
-        <Form.Item shouldUpdate={(prev, cur) => prev.selectedSteps !== cur.selectedSteps} noStyle>
-          {({ getFieldValue }) => {
-            const steps: string[] = getFieldValue("selectedSteps") ?? [];
-            if (steps.length === 0) return null;
-            return (
-              <div style={{ marginBottom: 16 }}>
-                <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>步骤提示词配置</Text>
-                {steps.map((sid) => (
-                  <Form.Item key={sid} name={["_stepInstruction", sid]} label={`${stepLabels[sid as WorkflowStepId] ?? sid} 提示词`} style={{ marginBottom: 8 }}>
-                    <TextArea rows={2} placeholder={`针对 ${sid} 的约束和提示`} />
-                  </Form.Item>
-                ))}
-              </div>
-            );
-          }}
-        </Form.Item>
-        <Form.Item name="fileGlobs" label="文件规则（一行一个 glob）">
-          <TextArea rows={3} placeholder={"src/components/**/*.tsx\nsrc/hooks/**"} />
-        </Form.Item>
-        <Form.Item name="routeHints" label="路由提示（一行一个 hint）">
-          <TextArea rows={2} placeholder={"Article\nmarkdown\ncomponent"} />
-        </Form.Item>
-        <Form.Item name="keywords" label="检索关键词（逗号/换行分隔，留空自动生成）">
-          <TextArea rows={2} placeholder="留空则由 Agent 自动生成" />
-        </Form.Item>
-
         <Tabs
           items={[{
             key: "form",
             label: "表单",
-            children: null,
+            children: (
+              <>
+                <Space style={{ width: "100%", justifyContent: "space-between" }}>
+                  <Form.Item name="id" label="ID" rules={[{ required: true, pattern: /^[a-z0-9][-a-z0-9]*[a-z0-9]?$/i, message: "slug 格式" }]} style={{ flex: 1 }}>
+                    <Input disabled={!isCreate} placeholder="my-skill-id" />
+                  </Form.Item>
+                  <Form.Item name="version" label="Version" initialValue="1.0.0" style={{ width: 100 }}>
+                    <Input placeholder="1.0.0" />
+                  </Form.Item>
+                </Space>
+                <Form.Item name="name" label="名称" rules={[{ required: true }]}>
+                  <Input placeholder="Skill 名称" />
+                </Form.Item>
+                <Form.Item name="description" label="描述">
+                  <TextArea rows={2} placeholder="简要描述该 Skill 的用途" />
+                </Form.Item>
+                <Form.Item name="requirementPatterns" label="需求模式">
+                  <Select
+                    mode="tags"
+                    options={patternOptions}
+                    placeholder="选择或输入需求模式"
+                    tokenSeparators={[",", "，", "\n"]}
+                  />
+                </Form.Item>
+                <Form.Item name="scopes" label="技术范围">
+                  <Select
+                    mode="tags"
+                    options={scopeOptions}
+                    placeholder="选择或输入技术范围"
+                    tokenSeparators={[",", "，", "\n"]}
+                  />
+                </Form.Item>
+                <Form.Item name="selectedSteps" label="影响步骤">
+                  <Select mode="multiple" options={stepOptions} placeholder="选择该 Skill 影响的 workflow step" />
+                </Form.Item>
+                <Form.Item shouldUpdate={(prev, cur) => prev.selectedSteps !== cur.selectedSteps} noStyle>
+                  {({ getFieldValue }) => {
+                    const steps: string[] = getFieldValue("selectedSteps") ?? [];
+                    if (steps.length === 0) return null;
+                    return (
+                      <div style={{ marginBottom: 16 }}>
+                        <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>步骤提示词配置</Text>
+                        {steps.map((sid) => (
+                          <Form.Item key={sid} name={["_stepInstruction", sid]} label={`${stepLabels[sid as WorkflowStepId] ?? sid} 提示词`} style={{ marginBottom: 8 }}>
+                            <TextArea rows={2} placeholder={`针对 ${sid} 的约束和提示`} />
+                          </Form.Item>
+                        ))}
+                      </div>
+                    );
+                  }}
+                </Form.Item>
+                <Form.Item name="fileGlobs" label="文件规则（一行一个 glob）">
+                  <TextArea rows={3} placeholder={"src/components/**/*.tsx\nsrc/hooks/**"} />
+                </Form.Item>
+                <Form.Item name="routeHints" label="路由提示（一行一个 hint）">
+                  <TextArea rows={2} placeholder={"Article\nmarkdown\ncomponent"} />
+                </Form.Item>
+                <Form.Item name="keywords" label="检索关键词（逗号/换行分隔，留空自动生成）">
+                  <TextArea rows={2} placeholder="留空则由 Agent 自动生成" />
+                </Form.Item>
+              </>
+            ),
           }, {
             key: "json",
             label: "预览 JSON",

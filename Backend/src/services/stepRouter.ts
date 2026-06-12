@@ -82,22 +82,22 @@ export function verificationCommandPolicy(
       case "frontend":
         return {
           required: ["npm:typecheck", "npm:lint", "npm:test"],
-          optional: ["npm:build", "tsc:noemit"],
+          optional: ["npm:build"],
         };
       case "backend":
         return {
           required: ["npm:typecheck", "npm:test"],
-          optional: ["npm:lint", "npm:build", "tsc:noemit"],
+          optional: ["npm:lint", "npm:build"],
         };
       case "fullstack":
         return {
           required: ["npm:typecheck", "npm:lint", "npm:test", "npm:build"],
-          optional: ["tsc:noemit"],
+          optional: [],
         };
       default:
         return {
           required: ["npm:typecheck", "npm:lint", "npm:test"],
-          optional: ["npm:build", "tsc:noemit"],
+          optional: ["npm:build"],
         };
     }
   })();

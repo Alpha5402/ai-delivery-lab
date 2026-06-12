@@ -77,6 +77,37 @@ describe("runRuntimeTool", () => {
       output: { testEntrypoints: ["root: npm run test"] },
     });
   });
+
+  it("detects workflow commands with package scope cwd", async () => {
+    const workspace = createWorkspace();
+    workspace.repositoryScan.scripts = {
+      root: ["test"],
+      frontend: ["build"],
+      backend: ["start"],
+    };
+
+    const call = await runRuntimeTool(workspace, "detect_workflow_commands");
+    const output = call.output as { candidates: Array<{ label: string; cwd: string; scope: string | null; available: boolean }> };
+
+    expect(output.candidates.find((candidate) => candidate.label === "npm:test")).toMatchObject({
+      available: true,
+      scope: "root",
+      cwd: "/tmp/demo",
+    });
+    expect(output.candidates.find((candidate) => candidate.label === "npm:build")).toMatchObject({
+      available: true,
+      scope: "frontend",
+      cwd: "/tmp/demo/frontend",
+    });
+  });
+
+  it("returns not_executed for npm commands when workspace dependencies are missing", async () => {
+    const call = await runRuntimeTool(createWorkspace(), "run_command", { label: "npm:test", cwd: "/tmp/demo" });
+    const output = call.output as { status: string; stderrPreview: string };
+
+    expect(output.status).toBe("not_executed");
+    expect(output.stderrPreview).toContain("依赖未安装");
+  });
 });
 
 

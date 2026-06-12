@@ -1,4 +1,4 @@
-import type { WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
+import type { RequirementDraft, WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
 import type { WorkspaceContext } from "../domain/workspace.js";
 import type { ConfirmationPolicyAddon, SkillManifest, SkillMatchReason, SkillStepSpec } from "./skillTypes.js";
 import { skillManifestSchema } from "./skillTypes.js";
@@ -64,7 +64,7 @@ function selectWithReason(run: WorkflowRun, workspace?: WorkspaceContext): Selec
   if (!ctx.requirement) return undefined;
 
   const pattern = ctx.requirement.pattern;
-  const scope = ctx.solution?.scope;
+  const scope = ctx.solution?.scope ?? inferScopeFromPattern(pattern);
 
   const PATTERN_SCORE = 2;
   const SCOPE_SCORE = 2;
@@ -76,9 +76,16 @@ function selectWithReason(run: WorkflowRun, workspace?: WorkspaceContext): Selec
   let best: SelectionResult | undefined;
 
   for (const skill of skills.values()) {
+    if (!skill.requirementPatterns.includes(pattern)) {
+      continue;
+    }
+    if (scope && !skill.scopes.includes(scope)) {
+      continue;
+    }
+
     let score = 0;
 
-    if (skill.requirementPatterns.includes(pattern)) score += PATTERN_SCORE;
+    score += PATTERN_SCORE;
     if (scope && skill.scopes.includes(scope)) score += SCOPE_SCORE;
 
     // keywords
@@ -138,6 +145,12 @@ function selectWithReason(run: WorkflowRun, workspace?: WorkspaceContext): Selec
   return best;
 }
 
+function inferScopeFromPattern(pattern: RequirementDraft["pattern"]) {
+  if (pattern === "frontend-only") return "frontend";
+  if (pattern === "cross-stack") return "fullstack";
+  return undefined;
+}
+
 /**
  * 基于当前 run 选择最匹配的 Skill（只返回 manifest，向后兼容）。
  * workspace 可选，不传时 project 信号为空。
@@ -192,6 +205,7 @@ export function getSkillStepSpec(
   if (!sel) return {};
 
   const stepSpec: SkillStepSpec | undefined = sel.skill.steps?.[stepId];
+  if (!stepSpec) return {};
 
   return {
     skillId: sel.skill.id,

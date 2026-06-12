@@ -63,6 +63,30 @@ describe("confirmationPolicy — clarificationComplete", () => {
   });
 });
 
+describe("confirmationPolicy — pull_request completion", () => {
+  it("keeps pull_request draft waiting for user confirmation", () => {
+    const result = resolveConfirmationDecision({
+      run: makeRun(), stepId: "pull_request",
+      output: { status: "draft", pushed: false },
+      qualityGate: makeGate("auto-continue"), executionMode: "manual-confirmation",
+    });
+
+    expect(result.shouldAutoContinue).toBe(false);
+    expect(result.nextStatus).toBe("waiting-human");
+  });
+
+  it("marks pull_request ready output as success after push phase", () => {
+    const result = resolveConfirmationDecision({
+      run: makeRun(), stepId: "pull_request",
+      output: { status: "ready", pushed: true },
+      qualityGate: makeGate("auto-continue"), executionMode: "manual-confirmation",
+    });
+
+    expect(result.shouldAutoContinue).toBe(true);
+    expect(result.nextStatus).toBe("success");
+  });
+});
+
 describe("confirmationPolicy — Skill force-manual", () => {
   it("force-manual overrides automatic mode", () => {
     const result = resolveConfirmationDecision({

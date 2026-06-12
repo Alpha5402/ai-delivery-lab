@@ -40,6 +40,8 @@ describe("buildRepositoryContextMessages", () => {
     expect(systemPrompt).toContain("目录结构、模块边界、核心运行原理");
     expect(systemPrompt).toContain("不要把 readme-for-agent.md 写成启动手册");
     expect(systemPrompt).toContain("sections 必须是 object，不是 array");
+    expect(systemPrompt).toContain("sections.architecture 必须是 string，不是 array");
+    expect(systemPrompt).toContain("sections.stack / conventions / testing / riskNotes 必须是 string array，不是 string");
     expect(userPayload.outputLanguage).toBe("zh-CN");
     expect(userPayload.focus).toEqual(expect.arrayContaining(["目录结构", "模块边界", "核心运行原理"]));
     expect(userPayload.avoidOverFocusingOn).toEqual(expect.arrayContaining(["启动命令"]));

@@ -3,21 +3,38 @@ import { generateSkillKeywords, buildKeywordInput } from "../agents/skillKeyword
 import { getSkill, listSkills, registerJsonSkill, unregisterSkill } from "../skills/skillRegistry.js";
 import { skillManifestSchema } from "../skills/skillTypes.js";
 import { deleteJsonSkillFile, writeJsonSkillFile } from "../skills/jsonSkillLoader.js";
+import { isBuiltinSkillId, resetBuiltinSkill } from "../skills/builtin/index.js";
+import type { SkillManifest } from "../skills/skillTypes.js";
 
 export const skillRoutes = Router();
 
+function withSkillSourceMeta<T extends SkillManifest>(skill: T) {
+  const builtin = isBuiltinSkillId(skill.id);
+  return {
+    ...skill,
+    source: skill.source ?? "builtin",
+    builtin,
+    overridden: builtin && skill.source === "json",
+  };
+}
+
 /** 列出所有已注册 Skill 的摘要元信息 */
 skillRoutes.get("/", (_req, res) => {
-  const skills = listSkills().map((skill) => ({
-    id: skill.id,
-    name: skill.name,
-    version: skill.version,
-    source: skill.source ?? "builtin",
-    requirementPatterns: skill.requirementPatterns,
-    scopes: skill.scopes,
-    matchKeywords: skill.match.keywords,
-    stepIds: Object.keys(skill.steps ?? {}),
-  }));
+  const skills = listSkills().map((skill) => {
+    const meta = withSkillSourceMeta(skill);
+    return {
+      id: meta.id,
+      name: meta.name,
+      version: meta.version,
+      source: meta.source,
+      builtin: meta.builtin,
+      overridden: meta.overridden,
+      requirementPatterns: meta.requirementPatterns,
+      scopes: meta.scopes,
+      matchKeywords: meta.match.keywords,
+      stepIds: Object.keys(meta.steps ?? {}),
+    };
+  });
   res.json(skills);
 });
 
@@ -28,7 +45,7 @@ skillRoutes.get("/:id", (req, res) => {
     res.status(404).json({ message: `Skill not found: ${req.params.id}` });
     return;
   }
-  res.json(skill);
+  res.json(withSkillSourceMeta(skill));
 });
 
 // ---- JSON Skill CRUD ----
@@ -57,22 +74,18 @@ skillRoutes.post("/json", async (req, res) => {
     delete raw._regenerateKeywords;
     writeJsonSkillFile(id, raw);
     const skill = registerJsonSkill(raw);
-    res.status(201).json(skill);
+    res.status(201).json(withSkillSourceMeta(skill));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid skill";
     res.status(400).json({ message });
   }
 });
 
-/** 更新 JSON Skill */
+/** 更新 JSON Skill；内置 Skill 会写入同 id 的 JSON 覆盖层。 */
 skillRoutes.patch("/json/:id", async (req, res) => {
   const existing = getSkill(req.params.id);
   if (!existing) {
     res.status(404).json({ message: `Skill not found: ${req.params.id}` });
-    return;
-  }
-  if (existing.source === "builtin") {
-    res.status(409).json({ message: "Builtin skill cannot be modified" });
     return;
   }
   try {
@@ -89,22 +102,40 @@ skillRoutes.patch("/json/:id", async (req, res) => {
     delete raw._regenerateKeywords;
     writeJsonSkillFile(req.params.id, raw);
     const skill = registerJsonSkill(raw);
-    res.json(skill);
+    res.json(withSkillSourceMeta(skill));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid skill";
     res.status(400).json({ message });
   }
 });
 
-/** 删除 JSON Skill */
+/** 重置内置 Skill：删除 JSON 覆盖层，并恢复内置 manifest。 */
+skillRoutes.post("/:id/reset", (req, res) => {
+  const id = req.params.id;
+  if (!isBuiltinSkillId(id)) {
+    res.status(409).json({ message: `Only builtin skill can be reset: ${id}` });
+    return;
+  }
+  deleteJsonSkillFile(id);
+  const restored = resetBuiltinSkill(id);
+  if (!restored) {
+    res.status(404).json({ message: `Skill not found: ${id}` });
+    return;
+  }
+  res.json(withSkillSourceMeta(restored));
+});
+
+/** 删除 JSON Skill；如果目标是内置覆盖层，则恢复内置版本。 */
 skillRoutes.delete("/json/:id", (req, res) => {
   const existing = getSkill(req.params.id);
   if (!existing) {
     res.status(404).json({ message: `Skill not found: ${req.params.id}` });
     return;
   }
-  if (existing.source === "builtin") {
-    res.status(409).json({ message: "Builtin skill cannot be deleted" });
+  if (isBuiltinSkillId(req.params.id)) {
+    deleteJsonSkillFile(req.params.id);
+    resetBuiltinSkill(req.params.id);
+    res.status(204).send();
     return;
   }
   deleteJsonSkillFile(req.params.id);

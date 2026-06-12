@@ -4,15 +4,31 @@ import { callJsonLlmWithSchema, type ChatMessage } from "../services/llmClient.j
 import { recordMetric } from "../services/metricsService.js";
 import { logWorkspaceEvent } from "../services/workspaceLogger.js";
 
+const stringListSchema = z.preprocess((value) => {
+  if (typeof value === "string") {
+    return value.trim() ? [value.trim()] : [];
+  }
+  return value;
+}, z.array(z.string().min(1)));
+
+const architectureSectionSchema = z.preprocess((value) => {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      .join("\n");
+  }
+  return value;
+}, z.string().min(1));
+
 const agentReadmeSchema = z.object({
   fileName: z.literal("readme-for-agent.md"),
   content: z.string().min(1),
   sections: z.object({
-    architecture: z.string().min(1),
-    stack: z.array(z.string().min(1)),
-    conventions: z.array(z.string().min(1)),
-    testing: z.array(z.string().min(1)),
-    riskNotes: z.array(z.string().min(1)),
+    architecture: architectureSectionSchema,
+    stack: stringListSchema,
+    conventions: stringListSchema,
+    testing: stringListSchema,
+    riskNotes: stringListSchema,
   }),
 });
 
@@ -63,6 +79,9 @@ export function buildRepositoryContextMessages(repoName: string, scan: Repositor
         "content 必须是完整中文 Markdown，适合后续 Agent 直接阅读。",
         "sections 必须包含 architecture, stack, conventions, testing, riskNotes。",
         "sections 必须是 object，不是 array。",
+        "sections.architecture 必须是 string，不是 array，用一段中文总结架构。",
+        "sections.stack / conventions / testing / riskNotes 必须是 string array，不是 string。",
+        "严格示例：\"sections\": { \"architecture\": \"前后端分离架构...\", \"stack\": [\"React + Vite\", \"Express + Sequelize\"], \"conventions\": [\"...\"], \"testing\": [\"...\"], \"riskNotes\": [\"...\"] }。",
         "architecture 要描述真实模块边界、前后端关系、数据层、重要业务域和请求链路，而不是只罗列技术栈。",
         "content 推荐结构：项目定位、目录结构、核心模块与职责、前后端交互链路、数据模型与持久化、测试与风险、后续 Agent 阅读顺序。",
         "目录结构必须优先基于 scan.fileTree 和 keyFiles；README 中的启动命令只能用于校验脚本，不应主导总结。",

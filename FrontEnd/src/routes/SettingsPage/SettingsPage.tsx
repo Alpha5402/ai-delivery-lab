@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Alert, Button, Card, Input, Segmented, Skeleton, Space, Switch, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Input, Modal, Segmented, Skeleton, Space, Switch, Tag, Typography, message } from "antd";
 import {
   deleteJsonSkill,
   fetchWorkflowSettings,
   getSkill,
   listSkills,
+  resetBuiltinSkill,
   updateWorkflowSettings,
   type SkillManifest,
   type SkillSummary,
@@ -45,9 +46,15 @@ export function SettingsPage() {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingSkill, setEditingSkill] = useState<SkillManifest | null>(null);
+  const [skillActionId, setSkillActionId] = useState<string | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [clearGithubToken, setClearGithubToken] = useState(false);
   const { template } = useDefaultWorkflowTemplate(); // API-driven, with fallback
+
+  async function refreshSkills() {
+    const updated = await listSkills();
+    setSkills(updated);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -147,6 +154,75 @@ export function SettingsPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleEditSkill = async (skill: SkillSummary) => {
+    setSkillActionId(skill.id);
+    try {
+      const full = await getSkill(skill.id);
+      setEditingSkill(full);
+      setEditorOpen(true);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "加载 Skill 失败");
+    } finally {
+      setSkillActionId(null);
+    }
+  };
+
+  const handleDeleteSkill = (skill: SkillSummary) => {
+    if (skill.source === "builtin") return;
+    Modal.confirm({
+      title: "删除该 Skill？",
+      content: (
+        <div>
+          <p>删除后，该 JSON Skill 不会再参与后续 Workflow 匹配和提示词注入。</p>
+          <p><strong>{skill.name}</strong></p>
+        </div>
+      ),
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      async onOk() {
+        setSkillActionId(skill.id);
+        try {
+          await deleteJsonSkill(skill.id);
+          await refreshSkills();
+          message.success("Skill 已删除");
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : "删除失败");
+          throw error;
+        } finally {
+          setSkillActionId(null);
+        }
+      },
+    });
+  };
+
+  const handleResetSkill = (skill: SkillSummary) => {
+    Modal.confirm({
+      title: "重置内置 Skill？",
+      content: (
+        <div>
+          <p>重置后会删除该 Skill 的本地覆盖配置，并恢复系统内置版本。</p>
+          <p><strong>{skill.name}</strong></p>
+        </div>
+      ),
+      okText: "重置",
+      cancelText: "取消",
+      async onOk() {
+        setSkillActionId(skill.id);
+        try {
+          await resetBuiltinSkill(skill.id);
+          await refreshSkills();
+          message.success("Skill 已恢复为内置版本");
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : "重置失败");
+          throw error;
+        } finally {
+          setSkillActionId(null);
+        }
+      },
+    });
   };
 
   return (
@@ -284,6 +360,7 @@ export function SettingsPage() {
                   <Tag color="purple">{skill.id}</Tag>
                   <Tag variant="outlined">v{skill.version}</Tag>
                   <Tag color={skill.source === "builtin" ? "default" : "orange"}>{skill.source}</Tag>
+                  {skill.builtin ? <Tag color={skill.overridden ? "gold" : "default"}>{skill.overridden ? "已覆盖内置" : "内置"}</Tag> : null}
                 </div>
                 <div className="settings-page__skill-tags">
                   {skill.requirementPatterns.map((p) => <Tag key={p} color="blue" variant="outlined">{p}</Tag>)}
@@ -295,22 +372,36 @@ export function SettingsPage() {
                     {skill.matchKeywords?.length ? `　·　关键词: ${skill.matchKeywords.slice(0, 8).join(", ")}${skill.matchKeywords.length > 8 ? "…" : ""}` : ""}
                   </Text>
                 </div>
-                {skill.source !== "builtin" && (
-                  <div className="settings-page__skill-actions">
-                    <Button size="small" className="settings-page__skill-button" onClick={async () => {
-                      const full = await getSkill(skill.id);
-                      setEditingSkill(full);
-                      setEditorOpen(true);
-                    }}>编辑</Button>
-                    <Button size="small" danger className="settings-page__skill-button settings-page__skill-button--danger" onClick={async () => {
-                      try {
-                        await deleteJsonSkill(skill.id);
-                        setSkills((prev) => prev.filter((s) => s.id !== skill.id));
-                        message.success("已删除");
-                      } catch (e) { message.error(e instanceof Error ? e.message : "删除失败"); }
-                    }}>删除</Button>
-                  </div>
-                )}
+                <div className="settings-page__skill-actions">
+                  <Button
+                    size="small"
+                    className="settings-page__skill-button"
+                    disabled={skillActionId === skill.id}
+                    onClick={() => handleEditSkill(skill)}
+                  >
+                    编辑
+                  </Button>
+                  {skill.builtin ? (
+                    <Button
+                      size="small"
+                      className="settings-page__skill-button"
+                      disabled={skillActionId === skill.id}
+                      onClick={() => handleResetSkill(skill)}
+                    >
+                      重置
+                    </Button>
+                  ) : (
+                    <Button
+                      size="small"
+                      danger
+                      className="settings-page__skill-button settings-page__skill-button--danger"
+                      disabled={skillActionId === skill.id}
+                      onClick={() => handleDeleteSkill(skill)}
+                    >
+                      删除
+                    </Button>
+                  )}
+                </div>
               </article>
             ))}
           </div>
@@ -322,10 +413,14 @@ export function SettingsPage() {
         editingSkill={editingSkill}
         onClose={async (saved) => {
           setEditorOpen(false);
-          if (saved) {
-            const updated = await listSkills();
-            setSkills(updated);
+          if (!saved) {
+            setEditingSkill(null);
+            return;
           }
+          if (saved) {
+            await refreshSkills();
+          }
+          setEditingSkill(null);
         }}
       />
 

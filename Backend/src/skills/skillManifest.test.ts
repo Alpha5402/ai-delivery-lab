@@ -28,16 +28,24 @@ describe("skillManifestSchema", () => {
     expect(() => skillManifestSchema.parse({ ...VALID_SKILL, name: "" })).toThrow();
   });
 
-  it("rejects unknown requirementPattern", () => {
-    expect(() =>
-      skillManifestSchema.parse({ ...VALID_SKILL, requirementPatterns: ["unknown-mode"] }),
-    ).toThrow();
+  it("accepts custom requirementPattern tags", () => {
+    const parsed = skillManifestSchema.parse({ ...VALID_SKILL, requirementPatterns: ["growth-experiment"] });
+    expect(parsed.requirementPatterns).toEqual(["growth-experiment"]);
   });
 
-  it("rejects unknown scope", () => {
-    expect(() =>
-      skillManifestSchema.parse({ ...VALID_SKILL, scopes: ["mobile"] }),
-    ).toThrow();
+  it("accepts custom scope tags", () => {
+    const parsed = skillManifestSchema.parse({ ...VALID_SKILL, scopes: ["mobile"] });
+    expect(parsed.scopes).toEqual(["mobile"]);
+  });
+
+  it("normalizes custom tags before validation", () => {
+    const parsed = skillManifestSchema.parse({
+      ...VALID_SKILL,
+      requirementPatterns: [" frontend-only ", "frontend-only", ""],
+      scopes: [" frontend ", "frontend"],
+    });
+    expect(parsed.requirementPatterns).toEqual(["frontend-only"]);
+    expect(parsed.scopes).toEqual(["frontend"]);
   });
 
   it("rejects unknown step id", () => {

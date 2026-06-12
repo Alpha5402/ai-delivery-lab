@@ -120,12 +120,14 @@ describe("skillRoutes CRUD", () => {
     expect((body as { name: string }).name).toBe("Updated");
   });
 
-  it("PATCH builtin returns 409", async () => {
-    const { status } = await fetchFromApp("/api/skills/json/frontend-display-computed-metric", {
+  it("PATCH builtin writes a JSON override", async () => {
+    const { status, body } = await fetchFromApp("/api/skills/json/frontend-display-computed-metric", {
       method: "PATCH",
       body: { name: "Hacked", version: "1", requirementPatterns: ["frontend-only"], scopes: ["frontend"], match: { keywords: ["x"] } },
     });
-    expect(status).toBe(409);
+    expect(status).toBe(200);
+    expect((body as { source: string; overridden: boolean }).source).toBe("json");
+    expect((body as { source: string; overridden: boolean }).overridden).toBe(true);
   });
 
   it("DELETE removes JSON skill from registry and file", async () => {
@@ -143,8 +145,26 @@ describe("skillRoutes CRUD", () => {
     expect(existsSync(path.join(TMP_DIR, "test-crud-skill.skill.json"))).toBe(false);
   });
 
-  it("DELETE builtin returns 409", async () => {
+  it("DELETE builtin override restores builtin instead of removing the skill", async () => {
+    await fetchFromApp("/api/skills/json/frontend-display-computed-metric", {
+      method: "PATCH",
+      body: { name: "Hacked", version: "1", requirementPatterns: ["frontend-only"], scopes: ["frontend"], match: { keywords: ["x"] } },
+    });
     const { status } = await fetchFromApp("/api/skills/json/frontend-display-computed-metric", { method: "DELETE" });
-    expect(status).toBe(409);
+    expect(status).toBe(204);
+    const skill = await fetchFromApp("/api/skills/frontend-display-computed-metric");
+    expect((skill.body as { source: string; overridden: boolean }).source).toBe("builtin");
+    expect((skill.body as { overridden: boolean }).overridden).toBe(false);
+  });
+
+  it("POST reset restores a builtin skill override", async () => {
+    await fetchFromApp("/api/skills/json/frontend-display-computed-metric", {
+      method: "PATCH",
+      body: { name: "Hacked", version: "1", requirementPatterns: ["frontend-only"], scopes: ["frontend"], match: { keywords: ["x"] } },
+    });
+    const { status, body } = await fetchFromApp("/api/skills/frontend-display-computed-metric/reset", { method: "POST" });
+    expect(status).toBe(200);
+    expect((body as { source: string; overridden: boolean }).source).toBe("builtin");
+    expect((body as { overridden: boolean }).overridden).toBe(false);
   });
 });

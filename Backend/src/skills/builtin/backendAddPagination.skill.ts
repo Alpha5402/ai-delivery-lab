@@ -10,7 +10,7 @@ export const backendAddPagination: SkillManifest = {
   id: "backend-add-pagination",
   name: "后端分页与搜索",
   version: "1.0.0",
-  requirementPatterns: ["frontend-only", "cross-stack", "interaction", "unclear"],
+  requirementPatterns: ["cross-stack", "interaction", "unclear"],
   scopes: ["backend", "fullstack"],
   match: {
     keywords: [

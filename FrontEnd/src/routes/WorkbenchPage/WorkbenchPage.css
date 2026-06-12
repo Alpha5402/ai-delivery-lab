@@ -41,6 +41,7 @@
 
 .runtime-workbench .ant-tag {
   background: transparent;
+  width: fit-content;
 }
 
 .runtime-workbench .runtime-chip-row {
@@ -79,6 +80,12 @@
 .runtime-workbench .runtime-chip {
   display: inline-flex;
   gap: 4px;
+}
+
+.runtime-workbench .runtime-chip--skill {
+  background: #f9f5ff;
+  border-color: #d6bbfb;
+  color: #6941c6;
 }
 
 .runtime-telemetry-strip strong {
@@ -328,7 +335,7 @@
   color: #175cd3;
 }
 
-.task-stepper__item .task-stepper__continue--cue.ant-btn {
+.task-stepper__item :is(.task-stepper__continue--cue, .task-stepper__repair--cue).ant-btn {
   animation: task-continue-breathe 1.7s ease-in-out infinite;
   background: #1677ff;
   border-color: #1677ff;
@@ -337,17 +344,17 @@
   pointer-events: auto;
 }
 
-.task-stepper__item:hover .task-stepper__continue--cue.ant-btn,
-.task-stepper__item:focus-visible .task-stepper__continue--cue.ant-btn,
-.task-stepper__item .task-stepper__continue--cue.ant-btn:hover,
-.task-stepper__item--active .task-stepper__continue--cue.ant-btn {
+.task-stepper__item:hover :is(.task-stepper__continue--cue, .task-stepper__repair--cue).ant-btn,
+.task-stepper__item:focus-visible :is(.task-stepper__continue--cue, .task-stepper__repair--cue).ant-btn,
+.task-stepper__item :is(.task-stepper__continue--cue, .task-stepper__repair--cue).ant-btn:hover,
+.task-stepper__item--active :is(.task-stepper__continue--cue, .task-stepper__repair--cue).ant-btn {
   background: #1677ff;
   border-color: #1677ff;
   color: #fff;
 }
 
-.task-stepper__continue--cue::before,
-.task-stepper__continue--cue::after {
+:is(.task-stepper__continue--cue, .task-stepper__repair--cue)::before,
+:is(.task-stepper__continue--cue, .task-stepper__repair--cue)::after {
   animation: task-continue-ripple 1.8s ease-out infinite;
   border: 1px solid rgba(22, 119, 255, 0.44);
   border-radius: 8px;
@@ -357,11 +364,11 @@
   position: absolute;
 }
 
-.task-stepper__continue--cue::after {
+:is(.task-stepper__continue--cue, .task-stepper__repair--cue)::after {
   animation-delay: 0.7s;
 }
 
-.task-stepper__continue--cue .task-stepper__action-icon {
+:is(.task-stepper__continue--cue, .task-stepper__repair--cue) .task-stepper__action-icon {
   filter: brightness(0) invert(1);
 }
 
@@ -1214,10 +1221,6 @@
   background: rgba(248, 113, 113, 0.18);
 }
 
-.patch-file-preview__line--meta {
-  background: rgba(96, 165, 250, 0.12);
-}
-
 .patch-file-preview__line-number {
   border-right: 1px solid rgba(148, 163, 184, 0.14);
   color: #64748b;
@@ -1310,6 +1313,76 @@
   background: #fffbeb;
   border-color: #fde68a;
   color: #92400e;
+}
+
+.verification-command-list {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.verification-command {
+  background: #f8fafc;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.verification-command--failed {
+  background: #fff7f7;
+  border-color: rgba(217, 45, 32, 0.22);
+}
+
+.verification-command__header,
+.verification-command__meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.verification-command__header {
+  justify-content: space-between;
+}
+
+.verification-command__header strong {
+  color: #101828;
+  font-size: 13px;
+}
+
+.verification-command__meta,
+.verification-command__cwd {
+  color: #667085;
+  font-size: 12px;
+}
+
+.verification-command__meta span {
+  background: #fff;
+  border: 1px solid #edf0f5;
+  border-radius: 999px;
+  line-height: 20px;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verification-command__output {
+  background: #101828;
+  border-radius: 8px;
+  color: #f8fafc;
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
 }
 
 .review-check-list {
@@ -1433,7 +1506,6 @@
 }
 
 .runtime-chat--minimized {
-  background: #fafcff;
   border: 1px solid #edf0f5;
   border-radius: 8px;
   margin: 0 20px;
@@ -2063,12 +2135,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .task-stepper__item .task-stepper__continue--cue.ant-btn {
+  .task-stepper__item :is(.task-stepper__continue--cue, .task-stepper__repair--cue).ant-btn {
     animation: none;
   }
 
-  .task-stepper__continue--cue::before,
-  .task-stepper__continue--cue::after {
+  :is(.task-stepper__continue--cue, .task-stepper__repair--cue)::before,
+  :is(.task-stepper__continue--cue, .task-stepper__repair--cue)::after {
     animation: none;
     opacity: 0;
   }

@@ -37,6 +37,7 @@ type CreateWorkflowRunInput = Omit<RequirementDraft, "title"> & {
  * 标记某个 run 是否正在被后台 promise 推进，避免并发 autoContinue 重入。
  */
 const advancing = new Set<string>();
+const advanceVersions = new Map<string, number>();
 
 /** 读缓存 TTL：5 分钟未访问则从内存淘汰 */
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -227,6 +228,8 @@ export function replayFromStep(runId: string, stepId: WorkflowStepId) {
   const run = getExistingRun(runId);
   const replayIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
   run.activeStepId = stepId;
+  advanceVersions.set(run.id, (advanceVersions.get(run.id) ?? 0) + 1);
+  advancing.delete(run.id);
   run.steps = run.steps.map((step, index) => {
     if (index < replayIndex) {
       return step;
@@ -241,6 +244,7 @@ export function replayFromStep(runId: string, stepId: WorkflowStepId) {
       return {
         ...step,
         status: "idle",
+        input: undefined,
         output: undefined,
         startedAt: undefined,
         finishedAt: undefined,
@@ -254,6 +258,7 @@ export function replayFromStep(runId: string, stepId: WorkflowStepId) {
     return {
       ...step,
       status: "idle",
+      input: undefined,
       output: undefined,
       startedAt: undefined,
       finishedAt: undefined,
@@ -327,7 +332,12 @@ export function confirmStep(runId: string, stepId: WorkflowStepId) {
  * - 完成后根据执行模式（automatic vs manual-confirmation）决定是否继续推进；
  * - 失败则把 step 标 failed 并广播。
  */
-export async function runStep(runId: string, stepId: WorkflowStepId, options?: WorkflowStepRunOptions) {
+export async function runStep(
+  runId: string,
+  stepId: WorkflowStepId,
+  options?: WorkflowStepRunOptions,
+  version = advanceVersions.get(runId) ?? 0,
+) {
   const run = getExistingRun(runId);
   const stepIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
   const step = run.steps[stepIndex];
@@ -363,15 +373,21 @@ export async function runStep(runId: string, stepId: WorkflowStepId, options?: W
   });
 
   // 后台异步推进；调用方拿到的是"刚切到 running"的快照。
-  void executeStepAndAdvance(run.id, stepId, options);
+  void executeStepAndAdvance(run.id, stepId, options, version);
 
   return runs.get(run.id) ?? run;
 }
 
-async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId, options?: WorkflowStepRunOptions) {
+async function executeStepAndAdvance(
+  runId: string,
+  stepId: WorkflowStepId,
+  options?: WorkflowStepRunOptions,
+  version = advanceVersions.get(runId) ?? 0,
+) {
   const MAX_REPAIR_ATTEMPTS = 1;
 
   try {
+    if ((advanceVersions.get(runId) ?? 0) !== version) return;
     const run = getExistingRun(runId);
     const stepIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
 
@@ -381,6 +397,7 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId, opti
         ? { ...current, status: "running" as const, startedAt: current.startedAt ?? now() }
         : current,
     );
+    if ((advanceVersions.get(runId) ?? 0) !== version) return;
     commitRun(run);
     workflowEventBus.emitStepEvent({
       type: "step",
@@ -391,6 +408,7 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId, opti
 
     // ---- 生成 → 校验 → (可选)修复一次 ----
     let output = await resolveStepOutput(run, stepId, { runOptions: options });
+    if ((advanceVersions.get(runId) ?? 0) !== version) return;
     const workspace = getCurrentWorkspace() ?? undefined;
     let verifier: VerifierResult = runStepVerifier(stepId, output, workspace);
     let repairAttempts = 0;
@@ -412,6 +430,7 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId, opti
           ? { previousOutput: output, reasons: verifier.qualityGate.reasons }
           : undefined;
         output = await resolveStepOutput(run, stepId, followUp ? { followUp, runOptions: options } : { runOptions: options });
+        if ((advanceVersions.get(runId) ?? 0) !== version) return;
         verifier = runStepVerifier(stepId, output, workspace);
         verifier.qualityGate.repairAttempts = repairAttempts;
       } catch (error) {
@@ -420,6 +439,7 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId, opti
       }
     }
 
+    if ((advanceVersions.get(runId) ?? 0) !== version) return;
     const latest = getExistingRun(runId);
     const mode = getStepExecutionMode(stepId);
     const gateDecision = verifier.qualityGate.decision;
@@ -519,9 +539,10 @@ async function executeStepAndAdvance(runId: string, stepId: WorkflowStepId, opti
     });
 
     if (shouldAutoContinue) {
-      await advanceWorkflow(runId);
+      await advanceWorkflow(runId, version);
     }
   } catch (error) {
+    if ((advanceVersions.get(runId) ?? 0) !== version) return;
     const latest = getWorkflowRun(runId);
     if (!latest) {
       return;
@@ -682,6 +703,44 @@ export function getStepHistory(runId: string, stepId: WorkflowStepId) {
   return step.history ?? [];
 }
 
+export async function repairCodeReviewAndRerun(runId: string): Promise<WorkflowRun> {
+  const { runCodeReviewFixAgent } = await import("../agents/workflowStepAgent.js");
+  const run = getExistingRun(runId);
+  const reviewStep = run.steps.find((s) => s.id === "code_review");
+  if (!reviewStep || !reviewStep.output) throw new Error("code_review has no output");
+
+  const review = reviewStep.output as Record<string, unknown>;
+
+  // Snapshot old review
+  reviewStep.history = [...(reviewStep.history ?? []), {
+    id: `snapshot-${Date.now()}`,
+    output: review,
+    logs: [...reviewStep.logs],
+    interventions: reviewStep.interventions ? [...reviewStep.interventions] : undefined,
+    createdAt: new Date().toISOString(),
+    reason: "regenerate" as const,
+  }];
+  reviewStep.status = "running";
+  reviewStep.logs = [...reviewStep.logs, "基于审查意见修复代码"];
+  reviewStep.output = undefined;
+  reviewStep.replayCount = (reviewStep.replayCount ?? 0) + 1;
+  commitRun(run);
+
+  // Execute fix
+  const fixResult = await runCodeReviewFixAgent(run, review as Parameters<typeof runCodeReviewFixAgent>[1]);
+
+  // Merge fix result back to code_generation output
+  if (fixResult) {
+    const codegenStep = run.steps.find((s) => s.id === "code_generation");
+    if (codegenStep?.output) {
+      (codegenStep.output as Record<string, unknown>).repoWriteResult = fixResult;
+    }
+  }
+
+  // 通过 runStep 重新执行 code_review（会走完整 verifier + confirmation policy 链路）
+  return runStep(runId, "code_review");
+}
+
 export function restoreStepSnapshot(runId: string, stepId: WorkflowStepId, snapshotId: string, _replayDownstream?: boolean) {
   const run = getExistingRun(runId);
   const stepIndex = getStepIndex(run, stepId as typeof stepOrder[number]);
@@ -754,18 +813,21 @@ function scheduleAutoContinue(runId: string, from?: WorkflowStepId) {
   if (advancing.has(runId)) {
     return;
   }
+  const version = advanceVersions.get(runId) ?? 0;
   advancing.add(runId);
 
   void (async () => {
     try {
       if (from) {
         // 从 replay 起点重新跑当前 step（runStep 内部会广播 running）。
-        await runStep(runId, from);
+        await runStep(runId, from, undefined, version);
       } else {
-        await advanceWorkflow(runId);
+        await advanceWorkflow(runId, version);
       }
     } finally {
-      advancing.delete(runId);
+      if ((advanceVersions.get(runId) ?? 0) === version) {
+        advancing.delete(runId);
+      }
     }
   })();
 }
@@ -774,10 +836,11 @@ function scheduleAutoContinue(runId: string, from?: WorkflowStepId) {
  * 顺序推进当前 activeStep，直到遇到 manual-confirmation 卡点 / waiting-human / failed。
  * 注意：因为 runStep 是异步触发后台 promise，所以这里也只在 automatic 续跑路径上调用。
  */
-async function advanceWorkflow(runId: string) {
+async function advanceWorkflow(runId: string, version = advanceVersions.get(runId) ?? 0) {
   let guard = 0;
 
   while (guard < stepOrder.length) {
+    if ((advanceVersions.get(runId) ?? 0) !== version) return;
     guard += 1;
     const run = getWorkflowRun(runId);
     if (!run) return;
@@ -796,7 +859,7 @@ async function advanceWorkflow(runId: string) {
 
     // 进入此 step 的执行（同步等待，确保串行推进）。
     if (getStepExecutionMode(step.id) === "automatic" || !step.output) {
-      await executeStepAndAdvance(runId, step.id);
+      await executeStepAndAdvance(runId, step.id, undefined, version);
       // executeStepAndAdvance 内部已经处理了 activeStepId / status，进入下一轮。
       continue;
     }

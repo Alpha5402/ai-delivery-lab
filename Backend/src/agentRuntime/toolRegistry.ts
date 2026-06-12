@@ -34,19 +34,26 @@ const COMMAND_WHITELIST: Record<string, { argv: string[]; description: string }>
   "npm:lint": { argv: ["npm", "run", "lint"], description: "ESLint / 代码风格检查" },
   "npm:test": { argv: ["npm", "test", "--", "--run"], description: "Vitest / Jest 单元测试" },
   "npm:build": { argv: ["npm", "run", "build"], description: "构建检查" },
-  "tsc:noemit": { argv: ["npx", "tsc", "--noEmit"], description: "tsc --noEmit" },
 };
 
 type RuntimeToolInput = Record<string, unknown>;
 
 function normalizeGitBranchName(input: unknown) {
-  return String(input ?? "")
+  const normalized = String(input ?? "")
     .replace(/[^A-Za-z0-9._/-]/g, "-")
     .replace(/\/{2,}/g, "/")
     .replace(/[-.]+(?=\/)/g, "")
     .replace(/\/[-.]+/g, "/")
     .replace(/^[-./]+|[-./]+$/g, "")
     .slice(0, 60);
+  if (!normalized) return "";
+
+  const segments = normalized.split("/").filter(Boolean);
+  const branch = segments.join("/");
+  if (["feature", "fix", "bugfix", "hotfix", "chore", "refactor", "codex"].includes(branch)) {
+    return `${branch}/update`;
+  }
+  return branch;
 }
 
 export async function runRuntimeTool(
@@ -185,21 +192,32 @@ async function gitStatus(workspace: WorkspaceContext) {
  */
 function detectWorkflowCommands(workspace: WorkspaceContext) {
   const scripts = workspace.repositoryScan.scripts ?? {};
-  const allScripts = new Set<string>();
-  for (const list of Object.values(scripts)) {
-    for (const name of list) allScripts.add(name);
-  }
+  const scopeOrder = Object.keys(scripts).sort((left, right) => {
+    if (left === "root") return -1;
+    if (right === "root") return 1;
+    if (left === "frontend") return -1;
+    if (right === "frontend") return 1;
+    return left.localeCompare(right);
+  });
 
   function pick(label: keyof typeof COMMAND_WHITELIST | string, requireScript: string | null) {
     const spec = (COMMAND_WHITELIST as Record<string, { argv: string[]; description: string }>)[label];
     if (!spec) return null;
-    const available = requireScript === null || allScripts.has(requireScript);
+    const scope = requireScript === null
+      ? "root"
+      : scopeOrder.find((candidateScope) => scripts[candidateScope]?.includes(requireScript));
+    const available = Boolean(scope);
+    const cwd = scope && workspace.workspaceDir
+      ? path.resolve(workspace.workspaceDir, scope === "root" ? "" : scope)
+      : workspace.workspaceDir;
     return {
       label,
       argv: spec.argv,
       description: spec.description,
+      scope: scope ?? null,
+      cwd,
       available,
-      reason: available ? "ok" : `package.json scripts.${requireScript} 未定义`,
+      reason: available ? "ok" : `未找到包含 scripts.${requireScript} 的 package.json`,
     };
   }
 
@@ -210,10 +228,8 @@ function detectWorkflowCommands(workspace: WorkspaceContext) {
       pick("npm:lint", "lint"),
       pick("npm:test", "test"),
       pick("npm:build", "build"),
-      // tsc 兜底:即使没有 typecheck script,只要项目里有 tsconfig 也能跑
-      pick("tsc:noemit", null),
     ].filter(Boolean),
-    detectedScripts: Array.from(allScripts).sort(),
+    detectedScripts: Object.fromEntries(Object.entries(scripts).map(([scope, list]) => [scope, [...list].sort()])),
   };
 }
 
@@ -240,7 +256,20 @@ async function runWorkspaceCommand(workspace: WorkspaceContext, input: RuntimeTo
     };
   }
 
-  const cwd = workspace.workspaceDir;
+  const cwd = resolveCommandCwd(workspace, input.cwd);
+  const command = spec.argv.join(" ");
+  if (label.startsWith("npm:") && !hasInstalledDependencies(workspace, cwd)) {
+    return {
+      label,
+      command,
+      cwd,
+      exitCode: null,
+      durationMs: 0,
+      status: "not_executed" as const,
+      stdoutPreview: "",
+      stderrPreview: "workspace 依赖未安装：请先在仓库根目录执行 npm install，再运行质量门禁。",
+    };
+  }
   const [bin, ...args] = spec.argv;
   const startedAt = performance.now();
   try {
@@ -251,7 +280,7 @@ async function runWorkspaceCommand(workspace: WorkspaceContext, input: RuntimeTo
     });
     return {
       label,
-      command: spec.argv.join(" "),
+      command,
       cwd,
       exitCode: 0,
       durationMs: Math.round(performance.now() - startedAt),
@@ -264,7 +293,7 @@ async function runWorkspaceCommand(workspace: WorkspaceContext, input: RuntimeTo
     const exitCode = typeof err.code === "number" ? err.code : null;
     return {
       label,
-      command: spec.argv.join(" "),
+      command,
       cwd,
       exitCode,
       durationMs: Math.round(performance.now() - startedAt),
@@ -273,6 +302,22 @@ async function runWorkspaceCommand(workspace: WorkspaceContext, input: RuntimeTo
       stderrPreview: (err.stderr ?? err.message ?? "").slice(-maxStreamChars),
     };
   }
+}
+
+function resolveCommandCwd(workspace: WorkspaceContext, inputCwd: unknown) {
+  const workspaceRoot = path.resolve(workspace.workspaceDir ?? "");
+  const cwd = typeof inputCwd === "string" && inputCwd.trim()
+    ? path.resolve(inputCwd)
+    : workspaceRoot;
+  if (cwd !== workspaceRoot && !cwd.startsWith(`${workspaceRoot}${path.sep}`)) {
+    throw new Error(`run_command cwd escaped workspace: ${cwd}`);
+  }
+  return cwd;
+}
+
+function hasInstalledDependencies(workspace: WorkspaceContext, cwd: string) {
+  const workspaceRoot = path.resolve(workspace.workspaceDir ?? "");
+  return existsSync(path.join(cwd, "node_modules")) || existsSync(path.join(workspaceRoot, "node_modules"));
 }
 
 /**
@@ -336,7 +381,7 @@ async function gitCheckoutBranch(workspace: WorkspaceContext, input: RuntimeTool
 
   try {
     // 已有同名分支:直接 checkout
-    await execFileAsync("git", ["rev-parse", "--verify", branch], {
+    await execFileAsync("git", ["rev-parse", "--verify", `refs/heads/${branch}`], {
       cwd: workspace.workspaceDir,
       timeout: 10_000,
     });
@@ -390,7 +435,7 @@ async function gitCreateBranch(workspace: WorkspaceContext, input: RuntimeToolIn
     }
   } catch { /* proceed */ }
   try {
-    await execFileAsync("git", ["rev-parse", "--verify", branch], { cwd: workspace.workspaceDir, timeout: 5_000 });
+    await execFileAsync("git", ["rev-parse", "--verify", `refs/heads/${branch}`], { cwd: workspace.workspaceDir, timeout: 5_000 });
     await execFileAsync("git", ["checkout", branch], { cwd: workspace.workspaceDir, timeout: 10_000 });
     return { ok: true, branch, reused: true };
   } catch {
