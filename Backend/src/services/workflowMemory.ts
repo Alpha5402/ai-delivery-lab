@@ -1,5 +1,6 @@
 import type { InterventionMessage, WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
 import { stepOrder } from "../domain/workflow.js";
+import { buildHistoricalCasePromptContext } from "./requirementCaseService.js";
 
 export type RuntimeMemoryEntry = {
   stepId: WorkflowStepId;
@@ -76,7 +77,10 @@ export function buildRuntimeMemoryContext(
     summaryLines.push("## 当前步骤的历史反馈");
     for (const m of currentStepMemory) {
       if (m.role === "user") {
-        const preview = m.content.length > 200 ? m.content.slice(0, 200) + "…" : m.content;
+        const limit = currentStepId === "code_generation" && m.content.startsWith("来自代码审查的重试要求")
+          ? 4_000
+          : 200;
+        const preview = m.content.length > limit ? m.content.slice(0, limit) + "…" : m.content;
         summaryLines.push(`- [${m.stepId}] ${preview}`);
       }
     }
@@ -84,6 +88,18 @@ export function buildRuntimeMemoryContext(
 
   if (summaryLines.length === 0) {
     summaryLines.push("（暂无用户反馈）");
+  }
+
+  const selectedCaseIds = new Set(run.recalledCaseSelection?.selectedCaseIds ?? []);
+  const selectedCases = selectedCaseIds.size > 0
+    ? run.recalledCases?.filter((item) => selectedCaseIds.has(item.id))
+    : [];
+  const historicalCases = currentStepId === "code_generation"
+    ? buildHistoricalCasePromptContext(selectedCases)
+    : "";
+  if (historicalCases) {
+    summaryLines.push("");
+    summaryLines.push(historicalCases);
   }
 
   return {

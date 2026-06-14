@@ -1,16 +1,53 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Alert, Button, Card, Drawer, Input, Modal, Space, Tag, Typography, message } from "antd";
-import { createWorkflowRun, deleteWorkflowRun, getCurrentWorkspace, getProjectWorkspace, openWorkspace } from "../../api/client";
+import { Alert, Button, Card, Collapse, Drawer, Input, Modal, Segmented, Select, Space, Switch, Tabs, Tag, Typography, message } from "antd";
+import {
+  createWorkflowRun,
+  deleteRequirementCase,
+  deleteWorkflowRun,
+  fetchProjectSettings,
+  favoriteWorkflowRunCase,
+  getCurrentWorkspace,
+  getProjectWorkspace,
+  listLlmModels,
+  listRequirementCases,
+  listSkills,
+  openWorkspace,
+  updateProjectSettings,
+  type LlmModel,
+  type ProjectSettings,
+  type ProjectSettingsPatch,
+  type ProjectSkillSetting,
+  type SkillManifest,
+  type SkillSummary,
+  type VerificationCommandSetting,
+  type WorkflowStepExecutionMode,
+} from "../../api/client";
 import { AppBreadcrumb } from "../../components/AppBreadcrumb/AppBreadcrumb";
-import type { RequirementPattern } from "../../features/workflow/types";
-import type { ProjectWorkspace, WorkflowRunSummary, WorkspaceContext } from "../../features/workspace/types";
+import { useDefaultWorkflowTemplate } from "../../features/workflow/workflowTemplate";
+import { SkillEditorModal } from "../SettingsPage/SkillEditorModal";
+import type { RequirementPattern, WorkflowStepId } from "../../features/workflow/types";
+import type { ProjectWorkspace, RequirementCase, WorkflowRunSummary, WorkspaceContext } from "../../features/workspace/types";
 import { loadWorkspace, saveWorkspace } from "../../features/workspace/workspaceStorage";
 import "./ChatPage.css";
-import { describe } from "vitest";
 
 const { Paragraph, Text, Title } = Typography;
 const { TextArea } = Input;
+
+const modeOptions: { label: string; value: WorkflowStepExecutionMode }[] = [
+  { label: "自动续跑", value: "automatic" },
+  { label: "需审核", value: "manual-confirmation" },
+];
+
+const modeDescription: Partial<Record<WorkflowStepId, string>> = {
+  requirement_intake: "接收用户需求，通常无需干预。",
+  clarification: "确认关键需求与约束，建议人工确认。",
+  solution_design: "生成交付方案，是后续修改的基础，建议人工确认。",
+  code_generation: "生成并写入代码变更，必须人工确认后再验证。",
+  code_review: "审查生成的代码变更，建议人工确认。",
+  verification: "验证结果会执行当前项目启用的门禁命令。",
+  pull_request: "提交 PR 涉及外部副作用，建议人工确认。",
+};
 
 const suggestedTasks = [
   {
@@ -67,9 +104,9 @@ const suggestedTasks = [
 
 const workflowPreview = [
   { name: "确认需求", description: "先确认边界和关键决策。" },
-  { name: "定位代码", description: "找到相关模块、文件和依赖。" },
   { name: "生成方案", description: "形成可执行的修改计划。" },
-  { name: "生成代码", description: "生成变更并补充必要测试。" },
+  { name: "生成代码", description: "定位文件、生成变更并补充必要测试。" },
+  { name: "代码审查", description: "复核生成结果并按意见修复。" },
   { name: "验证结果", description: "运行校验并汇总交付风险。" },
 ];
 
@@ -127,12 +164,21 @@ function getRunStatusLabel(status: WorkflowRunSummary["status"]) {
   return "需要确认";
 }
 
+function createVerificationCommandDraft(): VerificationCommandSetting {
+  return {
+    id: `cmd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    name: "新增检查项",
+    command: "",
+    enabled: true,
+  };
+}
+
 function formatStepName(value?: string) {
   const map: Record<string, string> = {
     requirement_intake: "接收需求",
     clarification: "确认需求",
     solution_design: "生成方案",
-    module_mapping: "定位代码",
+    module_mapping: "生成代码",
     code_generation: "生成代码",
     repo_write: "生成代码",
     verification: "验证结果",
@@ -140,7 +186,7 @@ function formatStepName(value?: string) {
     "Requirement Composer": "接收需求",
     "Clarifier Agent": "确认需求",
     "Planner Agent": "生成方案",
-    "Context Locator": "定位代码",
+    "Context Locator": "生成代码",
     "Codegen Skill": "生成代码",
     Verifier: "验证结果",
     "PR Assistant": "提交 PR",
@@ -152,13 +198,27 @@ function formatStepName(value?: string) {
 export function ChatPage() {
   const navigate = useNavigate();
   const { projectId } = useParams();
+  const { template } = useDefaultWorkflowTemplate();
   const [workspace, setWorkspace] = useState<WorkspaceContext | null>(null);
   const [project, setProject] = useState<ProjectWorkspace | null>(null);
   const [requirement, setRequirement] = useState("");
   const [isContextOpen, setIsContextOpen] = useState(false);
+  const [isCaseLibraryOpen, setIsCaseLibraryOpen] = useState(false);
+  const [isProjectSettingsOpen, setIsProjectSettingsOpen] = useState(false);
+  const [projectSettings, setProjectSettings] = useState<ProjectSettings | null>(null);
+  const [projectSettingsDraft, setProjectSettingsDraft] = useState<ProjectSettings | null>(null);
+  const [projectSettingsLoading, setProjectSettingsLoading] = useState(false);
+  const [llmModels, setLlmModels] = useState<LlmModel[]>([]);
+  const [publicSkills, setPublicSkills] = useState<SkillSummary[]>([]);
+  const [isProjectSkillEditorOpen, setIsProjectSkillEditorOpen] = useState(false);
+  const [editingProjectSkill, setEditingProjectSkill] = useState<SkillManifest | null>(null);
+  const [requirementCases, setRequirementCases] = useState<RequirementCase[]>([]);
   const [submitStatus, setSubmitStatus] = useState<"idle" | "creating" | "failed">("idle");
   const [loadError, setLoadError] = useState("");
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
+  const [caseActionId, setCaseActionId] = useState<string | null>(null);
+  const projectSettingsAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const projectSettingsAutosaveSeqRef = useRef(0);
 
   useEffect(() => {
     let isMounted = true;
@@ -216,6 +276,59 @@ export function ChatPage() {
   }, [navigate, projectId]);
 
   const workspaceStack = useMemo(() => (workspace ? getStack(workspace).slice(0, 6) : []), [workspace]);
+  const projectSettingsDirty = useMemo(
+    () => JSON.stringify(projectSettings) !== JSON.stringify(projectSettingsDraft),
+    [projectSettings, projectSettingsDraft],
+  );
+
+  function buildProjectSettingsPatch(settings: ProjectSettings): ProjectSettingsPatch {
+    return {
+      verificationCommands: settings.verificationCommands.filter((command) => command.id.trim() && command.name.trim() && command.command.trim()),
+      stepExecutionModes: settings.stepExecutionModes,
+      selectedLlmModelId: settings.selectedLlmModelId || null,
+      excludedPublicSkillIds: settings.excludedPublicSkillIds ?? [],
+      projectSkills: settings.projectSkills.filter((skill) => skill.id.trim()),
+    };
+  }
+
+  useEffect(() => {
+    if (projectSettingsLoading || !workspace?.id || !projectSettingsDraft || !projectSettingsDirty) {
+      return;
+    }
+
+    if (projectSettingsAutosaveTimerRef.current) {
+      clearTimeout(projectSettingsAutosaveTimerRef.current);
+    }
+
+    const projectIdForSave = workspace.id;
+    const draftSnapshot = projectSettingsDraft;
+    const draftSnapshotJson = JSON.stringify(draftSnapshot);
+    const seq = projectSettingsAutosaveSeqRef.current + 1;
+    projectSettingsAutosaveSeqRef.current = seq;
+
+    projectSettingsAutosaveTimerRef.current = setTimeout(() => {
+      void updateProjectSettings(projectIdForSave, buildProjectSettingsPatch(draftSnapshot))
+        .then((next) => {
+          if (projectSettingsAutosaveSeqRef.current !== seq) return;
+          setProjectSettings(next);
+          setProjectSettingsDraft((current) => {
+            if (!current || JSON.stringify(current) === draftSnapshotJson) return next;
+            return current;
+          });
+        })
+        .catch((error: unknown) => {
+          if (projectSettingsAutosaveSeqRef.current !== seq) return;
+          const errorMessage = error instanceof Error ? error.message : "项目配置自动保存失败";
+          message.error(errorMessage);
+        });
+    }, 600);
+
+    return () => {
+      if (projectSettingsAutosaveTimerRef.current) {
+        clearTimeout(projectSettingsAutosaveTimerRef.current);
+      }
+    };
+  }, [projectSettingsDirty, projectSettingsDraft, projectSettingsLoading, workspace?.id]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -241,6 +354,149 @@ export function ChatPage() {
     }
   }
 
+  async function refreshProjectAndCases() {
+    if (!workspace?.id) return;
+    const [projectWorkspace, cases] = await Promise.all([
+      getProjectWorkspace(workspace.id),
+      listRequirementCases(workspace.id),
+    ]);
+    setProject(projectWorkspace);
+    setRequirementCases(cases);
+  }
+
+  async function openCaseLibrary() {
+    if (!workspace?.id) return;
+    setIsCaseLibraryOpen(true);
+    try {
+      setRequirementCases(await listRequirementCases(workspace.id));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "历史案例库加载失败");
+    }
+  }
+
+  async function openProjectSettings() {
+    if (!workspace?.id) return;
+    setIsProjectSettingsOpen(true);
+    setProjectSettingsLoading(true);
+    try {
+      const [settings, models, skills] = await Promise.all([
+        fetchProjectSettings(workspace.id),
+        listLlmModels().catch(() => [] as LlmModel[]),
+        listSkills().catch(() => [] as SkillSummary[]),
+      ]);
+      setProjectSettings(settings);
+      setProjectSettingsDraft(settings);
+      setLlmModels(models);
+      setPublicSkills(skills);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "项目配置加载失败");
+    } finally {
+      setProjectSettingsLoading(false);
+    }
+  }
+
+  function updateVerificationCommand(
+    id: string,
+    key: keyof Pick<VerificationCommandSetting, "name" | "command" | "enabled">,
+    value: string | boolean,
+  ) {
+    setProjectSettingsDraft((current) => current ? ({
+      ...current,
+      verificationCommands: current.verificationCommands.map((command) =>
+        command.id === id ? { ...command, [key]: value } : command,
+      ),
+    }) : current);
+  }
+
+  function updateProjectSkill(
+    id: string,
+    patch: Partial<ProjectSkillSetting>,
+  ) {
+    setProjectSettingsDraft((current) => current ? ({
+      ...current,
+      projectSkills: current.projectSkills.map((skill) =>
+        skill.id === id ? { ...skill, ...patch } : skill,
+      ),
+    }) : current);
+  }
+
+  function togglePublicSkillExcluded(skillId: string, excluded: boolean) {
+    setProjectSettingsDraft((current) => current ? ({
+      ...current,
+      excludedPublicSkillIds: excluded
+        ? Array.from(new Set([...(current.excludedPublicSkillIds ?? []), skillId]))
+        : (current.excludedPublicSkillIds ?? []).filter((id) => id !== skillId),
+    }) : current);
+  }
+
+  async function addProjectPrivateSkill(manifest: Record<string, unknown>) {
+    const skill = manifest as SkillManifest;
+    setProjectSettingsDraft((current) => current ? ({
+      ...current,
+      projectSkills: [
+        ...current.projectSkills.filter((item) => item.id !== skill.id),
+        {
+          id: skill.id,
+          enabled: true,
+          name: skill.name,
+          description: (skill as SkillManifest & { description?: string }).description,
+          version: skill.version,
+          requirementPatterns: skill.requirementPatterns,
+          scopes: skill.scopes,
+          match: skill.match,
+          steps: skill.steps,
+        },
+      ],
+    }) : current);
+  }
+
+  function openCreateProjectSkill() {
+    setEditingProjectSkill(null);
+    setIsProjectSkillEditorOpen(true);
+  }
+
+  function openEditProjectSkill(skill: ProjectSkillSetting) {
+    setEditingProjectSkill({
+      id: skill.id,
+      source: "project",
+      name: skill.name ?? skill.id,
+      description: skill.description,
+      version: skill.version ?? "1.0.0",
+      requirementPatterns: skill.requirementPatterns ?? [],
+      scopes: skill.scopes ?? [],
+      match: skill.match ?? {},
+      steps: skill.steps as SkillManifest["steps"],
+    });
+    setIsProjectSkillEditorOpen(true);
+  }
+
+  async function handleFavoriteRun(run: WorkflowRunSummary) {
+    setCaseActionId(run.id);
+    try {
+      await favoriteWorkflowRunCase(run.id);
+      await refreshProjectAndCases();
+      message.success("需求已收藏到历史案例库");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "收藏需求失败");
+    } finally {
+      setCaseActionId(null);
+    }
+  }
+
+  async function handleDeleteCase(item: RequirementCase) {
+    if (!workspace?.id) return;
+    setCaseActionId(item.id);
+    try {
+      await deleteRequirementCase(workspace.id, item.id);
+      await refreshProjectAndCases();
+      message.success("历史案例已移除");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "移除历史案例失败");
+    } finally {
+      setCaseActionId(null);
+    }
+  }
+
   function confirmDeleteRun(run: WorkflowRunSummary) {
     Modal.confirm({
       title: "删除该交付任务？",
@@ -252,7 +508,7 @@ export function ChatPage() {
         </div>
       ),
       okText: "删除",
-      okButtonProps: { danger: true, loading: deletingRunId === run.id },
+      okButtonProps: { className: "settings-page__skill-button settings-page__skill-button--danger", danger: true, loading: deletingRunId === run.id },
       cancelText: "取消",
       async onOk() {
         setDeletingRunId(run.id);
@@ -276,7 +532,7 @@ export function ChatPage() {
     return (
       <main className="requirement-page">
         <AppBreadcrumb project={projectId ? { id: projectId, name: "Loading Project..." } : undefined} />
-        <Alert type="error" showIcon message={loadError} action={<Button onClick={() => navigate("/dashboard")}>返回 Dashboard</Button>} />
+        <Alert type="error" showIcon message={loadError} action={<Button className="settings-page__skill-button" onClick={() => navigate("/dashboard")}>返回 Dashboard</Button>} />
       </main>
     );
   }
@@ -302,10 +558,14 @@ export function ChatPage() {
           <Text className="eyebrow">项目任务中心</Text>
           <Title level={1}>{projectBreadcrumb.name}</Title>
           <Paragraph>
-            AI 已读取当前项目上下文。描述你要交付的改动，系统会先确认关键决策，再定位代码、生成方案并验证结果。
+            AI 已读取当前项目上下文。描述你要交付的改动，系统会先确认关键决策，再生成方案、生成代码并验证结果。
           </Paragraph>
         </div>
-        <Link className="requirement-hero__link" to="/dashboard">重新选择项目</Link>
+        <Space>
+          <Button className="settings-page__skill-button" onClick={openCaseLibrary}>历史案例库</Button>
+          <Button className="settings-page__skill-button" onClick={() => setIsContextOpen(true)}>查看 AI 上下文</Button>
+          <Button className="settings-page__skill-button settings-page__skill-button--primary" onClick={() => void openProjectSettings()}>项目配置</Button>
+        </Space>
       </section>
 
       <Card className="repo-summary-card" bordered={false}>
@@ -315,7 +575,6 @@ export function ChatPage() {
             <Title level={2}>{workspace.repoName}</Title>
             <Paragraph>{workspace.architectureSummary}</Paragraph>
           </div>
-          <Button onClick={() => setIsContextOpen(true)}>查看 AI 上下文</Button>
         </div>
 
         <div className="repo-summary-card__signals">
@@ -326,8 +585,8 @@ export function ChatPage() {
         </div>
 
         <Space className="repo-summary-card__stack" size={[8, 8]} wrap>
-          {workspaceStack.map((item) => <Tag key={item} color="processing">{item}</Tag>)}
-          {workspaceStack.length === 0 ? <Tag>Stack Pending</Tag> : null}
+          {workspaceStack.map((item) => <Tag key={item} color="processing" variant="filled">{item}</Tag>)}
+          {workspaceStack.length === 0 ? <Tag color="default" variant="filled">Stack Pending</Tag> : null}
         </Space>
       </Card>
 
@@ -339,7 +598,7 @@ export function ChatPage() {
                 <Text className="eyebrow">新交付任务</Text>
                 <Title level={2}>描述你要交付的改动</Title>
               </div>
-              <Tag color={submitStatus === "creating" ? "processing" : "default"}>AI 就绪</Tag>
+              <Tag color={submitStatus === "creating" ? "processing" : "default"} variant="filled">AI 就绪</Tag>
             </div>
 
             <TextArea
@@ -371,7 +630,7 @@ export function ChatPage() {
 
             <div className="composer-card__actions">
               <Text type="secondary">描述目标、约束和验收标准，AI 会先确认关键决策。</Text>
-              <Button type="primary" htmlType="submit" loading={submitStatus === "creating"} disabled={!requirement.trim()}>
+              <Button className="settings-page__skill-button settings-page__skill-button--primary" htmlType="submit" loading={submitStatus === "creating"} disabled={!requirement.trim()}>
                 {submitStatus === "creating" ? "正在创建任务..." : "开始交付"}
               </Button>
             </div>
@@ -392,16 +651,29 @@ export function ChatPage() {
               {project.workflowRuns.map((run) => (
                 <div className="workflow-run-card" key={run.id}>
                   <button type="button" onClick={() => navigate(`/project/${workspace.id}/workflow/${run.id}`)}>
-                    <Tag className="workflow-run-card__status" color={getRunStatusColor(run.status)}>{getRunStatusLabel(run.status)}</Tag>
+                    <Tag className="workflow-run-card__status" color={getRunStatusColor(run.status)} variant="filled">{getRunStatusLabel(run.status)}</Tag>
                     <div>
                       <strong>{run.title}</strong>
                       <span className="workflow-run-card__description">{run.requirement}</span>
                     </div>
                     <small>{formatStepName(run.currentStep)} · {formatRelativeTime(run.updatedAt)}</small>
                   </button>
+                  {run.status === "success" ? (
+                    <Button
+                      className="settings-page__skill-button"
+                      size="small"
+                      disabled={run.caseFavorited || caseActionId === run.id}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleFavoriteRun(run);
+                      }}
+                    >
+                      {run.caseFavorited ? "已收藏" : "收藏需求"}
+                    </Button>
+                  ) : null}
                   <Button
+                    className="settings-page__skill-button settings-page__skill-button--danger"
                     danger
-                    type="text"
                     size="small"
                     loading={deletingRunId === run.id}
                     onClick={(event) => {
@@ -433,6 +705,279 @@ export function ChatPage() {
           {workspace.repoUrl ? <Paragraph><a href={workspace.repoUrl}>{workspace.repoUrl}</a></Paragraph> : null}
           <pre>{workspace.agentReadme.content}</pre>
         </div>
+      </Drawer>
+
+      <Drawer
+        title="项目配置"
+        open={isProjectSettingsOpen}
+        width={860}
+        onClose={() => setIsProjectSettingsOpen(false)}
+      >
+        {!projectSettingsDraft || projectSettingsLoading ? (
+          <Text type="secondary">正在加载项目配置...</Text>
+        ) : (
+          <Tabs
+            items={[
+              {
+                key: "verification",
+                label: "门禁检查项",
+                children: (
+                  <div className="project-settings-panel">
+                    <div className="project-settings-panel__head">
+                      <Text type="secondary">命令会在 workspace 根目录执行，支持 cd 子目录后运行。</Text>
+                      <Button
+                        className="settings-page__skill-button"
+                        size="small"
+                        onClick={() => setProjectSettingsDraft((current) => current ? ({
+                          ...current,
+                          verificationCommands: [...current.verificationCommands, createVerificationCommandDraft()],
+                        }) : current)}
+                      >
+                        新增检查项
+                      </Button>
+                    </div>
+                    {projectSettingsDraft.verificationCommands.length === 0 ? (
+                      <Text type="secondary">未配置门禁检查项。验证结果阶段不会执行命令。</Text>
+                    ) : (
+                      <div className="project-settings-command-list">
+                        {projectSettingsDraft.verificationCommands.map((command) => (
+                          <article className="project-settings-command" key={command.id}>
+                            <Switch
+                              checked={command.enabled}
+                              checkedChildren="启用"
+                              unCheckedChildren="关闭"
+                              onChange={(checked) => updateVerificationCommand(command.id, "enabled", checked)}
+                            />
+                            <Input
+                              value={command.name}
+                              onChange={(event) => updateVerificationCommand(command.id, "name", event.target.value)}
+                              placeholder="例如 Build"
+                            />
+                            <Input
+                              value={command.command}
+                              onChange={(event) => updateVerificationCommand(command.id, "command", event.target.value)}
+                              placeholder="例如 cd frontend && npm run build"
+                            />
+                            <Button
+                              className="settings-page__skill-button settings-page__skill-button--danger"
+                              danger
+                              size="small"
+                              onClick={() => setProjectSettingsDraft((current) => current ? ({
+                                ...current,
+                                verificationCommands: current.verificationCommands.filter((item) => item.id !== command.id),
+                              }) : current)}
+                            >
+                              删除
+                            </Button>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ),
+              },
+              {
+                key: "execution",
+                label: "执行模式",
+                children: (
+                  <div className="project-settings-mode-list">
+                    {template.steps.map((step) => {
+                      const stepId = step.id as WorkflowStepId;
+                      return (
+                        <article className="project-settings-mode" key={stepId}>
+                          <div>
+                            <strong>{step.label}</strong>
+                            <span>{step.agent} · {modeDescription[stepId] ?? step.outputSchemaId}</span>
+                          </div>
+                          <Segmented
+                            options={modeOptions}
+                            value={projectSettingsDraft.stepExecutionModes[stepId] ?? step.defaultExecutionMode}
+                            onChange={(value) => setProjectSettingsDraft((current) => current ? ({
+                              ...current,
+                              stepExecutionModes: { ...current.stepExecutionModes, [stepId]: value as WorkflowStepExecutionMode },
+                            }) : current)}
+                            disabled={stepId === "requirement_intake"}
+                          />
+                        </article>
+                      );
+                    })}
+                  </div>
+                ),
+              },
+              {
+                key: "skills",
+                label: "项目 Skill",
+                children: (
+                  <div className="project-settings-panel">
+                    <div className="project-settings-panel__head">
+                      <Text type="secondary">公共 Skill 默认参与当前项目；可按项目排除，也可以新增仅当前项目可用的私有 Skill。</Text>
+                      <Button className="settings-page__skill-button" size="small" onClick={openCreateProjectSkill}>新增</Button>
+                    </div>
+                    <div className="project-settings-skill-section">
+                      <strong>公共 Skill</strong>
+                      {publicSkills.length === 0 ? (
+                        <Text type="secondary">暂无公共 Skill。</Text>
+                      ) : (
+                        <div className="project-settings-skill-list">
+                          {publicSkills.map((skill) => {
+                            const excluded = (projectSettingsDraft.excludedPublicSkillIds ?? []).includes(skill.id);
+                            return (
+                              <article className="project-settings-skill project-settings-skill--compact" key={skill.id}>
+                                <div className="project-settings-skill__meta">
+                                  <strong>{skill.name}</strong>
+                                  <span>{skill.id} · v{skill.version}</span>
+                                </div>
+                                <Space>
+                                  {skill.requirementPatterns.slice(0, 3).map((pattern) => <Tag key={pattern} color="blue" variant="filled">{pattern}</Tag>)}
+                                  <Switch
+                                    checked={!excluded}
+                                    checkedChildren="启用"
+                                    unCheckedChildren="排除"
+                                    onChange={(checked) => togglePublicSkillExcluded(skill.id, !checked)}
+                                  />
+                                </Space>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div className="project-settings-skill-section">
+                      <strong>项目私有 Skill</strong>
+                      {projectSettingsDraft.projectSkills.length === 0 ? (
+                        <Text type="secondary">暂无项目私有 Skill。点击“新增项目 Skill”创建后，只会在当前项目参与匹配。</Text>
+                      ) : (
+                        <div className="project-settings-skill-list">
+                          {projectSettingsDraft.projectSkills.map((skill) => (
+                            <article className="project-settings-skill project-settings-skill--compact" key={skill.id}>
+                              <div className="project-settings-skill__meta">
+                                <strong>{skill.name ?? skill.id}</strong>
+                                <span>{skill.id}{skill.version ? ` · v${skill.version}` : ""}</span>
+                              </div>
+                              <Space>
+                                {(skill.requirementPatterns ?? []).slice(0, 3).map((pattern) => <Tag key={pattern} color="blue" variant="filled">{pattern}</Tag>)}
+                                <Switch
+                                  checked={skill.enabled}
+                                  checkedChildren="启用"
+                                  unCheckedChildren="关闭"
+                                  onChange={(checked) => updateProjectSkill(skill.id, { enabled: checked })}
+                                />
+                                <Button
+                                  className="settings-page__skill-button"
+                                  size="small"
+                                  onClick={() => openEditProjectSkill(skill)}
+                                >
+                                  编辑
+                                </Button>
+                                <Button
+                                  className="settings-page__skill-button settings-page__skill-button--danger"
+                                  danger
+                                  size="small"
+                                  onClick={() => setProjectSettingsDraft((current) => current ? ({
+                                    ...current,
+                                    projectSkills: current.projectSkills.filter((item) => item.id !== skill.id),
+                                  }) : current)}
+                                >
+                                  删除
+                                </Button>
+                              </Space>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                key: "llm",
+                label: "LLM",
+                children: (
+                  <div className="project-settings-panel">
+                    <Text type="secondary">未选择时使用公共配置里的默认模型。</Text>
+                    <Select
+                      className="project-settings-llm-select"
+                      value={projectSettingsDraft.selectedLlmModelId ?? ""}
+                      onChange={(value) => setProjectSettingsDraft((current) => current ? ({ ...current, selectedLlmModelId: value || undefined }) : current)}
+                      options={[
+                        { label: "使用全局默认", value: "" },
+                        ...llmModels.map((model) => ({
+                          label: `${model.displayName}${model.isDefault ? "（全局默认）" : ""}`,
+                          value: model.id,
+                        })),
+                      ]}
+                    />
+                  </div>
+                ),
+              },
+            ]}
+          />
+        )}
+      </Drawer>
+
+      <SkillEditorModal
+        open={isProjectSkillEditorOpen}
+        editingSkill={editingProjectSkill}
+        onSaveManifest={async (manifest) => {
+          await addProjectPrivateSkill(manifest);
+          setIsProjectSkillEditorOpen(false);
+          setEditingProjectSkill(null);
+        }}
+        onClose={(saved) => {
+          if (!saved) {
+            setIsProjectSkillEditorOpen(false);
+            setEditingProjectSkill(null);
+          }
+        }}
+      />
+
+      <Drawer
+        title="历史案例库"
+        open={isCaseLibraryOpen}
+        width={760}
+        onClose={() => setIsCaseLibraryOpen(false)}
+      >
+        {requirementCases.length === 0 ? (
+          <p className="workflow-history__empty">暂无历史案例。完成交付任务后点击「收藏需求」，相似新需求会自动召回这些案例。</p>
+        ) : (
+          <Collapse
+            items={requirementCases.map((item) => ({
+              key: item.id,
+              label: (
+                <div className="case-library-row">
+                  <strong>{item.title}</strong>
+                  <span>{formatRelativeTime(item.updatedAt)}</span>
+                </div>
+              ),
+              children: (
+                <article className="case-library-detail">
+                  <Paragraph>{item.requirementSummary}</Paragraph>
+                  <Paragraph type="secondary">{item.solutionSummary}</Paragraph>
+                  <Space size={[6, 6]} wrap>
+                    {item.tags.map((tag) => <Tag key={tag} color="default" variant="filled">{tag}</Tag>)}
+                    {item.touchedFiles.slice(0, 8).map((file) => <Tag key={file} color="blue" variant="filled">{file}</Tag>)}
+                  </Space>
+                  {item.acceptedConstraints.length ? (
+                    <ul>
+                      {item.acceptedConstraints.slice(0, 5).map((constraint) => <li key={constraint}>{constraint}</li>)}
+                    </ul>
+                  ) : null}
+                  <Paragraph type="secondary">{item.verificationSummary}</Paragraph>
+                  {item.pullRequestUrl ? <Paragraph><a href={item.pullRequestUrl}>{item.pullRequestUrl}</a></Paragraph> : null}
+                  <Button
+                    className="settings-page__skill-button settings-page__skill-button--danger"
+                    danger
+                    size="small"
+                    disabled={caseActionId === item.id}
+                    onClick={() => void handleDeleteCase(item)}
+                  >
+                    移除案例
+                  </Button>
+                </article>
+              ),
+            }))}
+          />
+        )}
       </Drawer>
     </main>
   );

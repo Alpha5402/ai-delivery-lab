@@ -42,10 +42,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           title="页面出现了问题"
           subTitle={this.state.error?.message ?? "发生了一个未知错误，请刷新页面或联系管理员。"}
           extra={[
-            <Button key="reload" type="primary" onClick={() => window.location.reload()}>
+            <Button key="reload" className="settings-page__skill-button settings-page__skill-button--primary" onClick={() => window.location.reload()}>
               刷新页面
             </Button>,
-            <Button key="reset" onClick={this.handleReset}>
+            <Button key="reset" className="settings-page__skill-button" onClick={this.handleReset}>
               尝试恢复
             </Button>,
           ]}

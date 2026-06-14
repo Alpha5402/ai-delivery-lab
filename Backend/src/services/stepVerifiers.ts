@@ -27,6 +27,7 @@ import type {
 } from "../domain/workflow.js";
 import type { WorkspaceContext } from "../domain/workspace.js";
 import { runRegisteredStepVerifier } from "../workflowExecution/verifierRegistry.js";
+import { analyzeRouteBindings, findShadowedRouteBinding } from "./routeBindingAnalysis.js";
 
 export type VerifierResult = {
   checks: StepCheck[];
@@ -37,6 +38,8 @@ const CLARIFICATION_CONFIDENCE_FLOOR = 0.7;
 const ACCEPTANCE_CRITERIA_MIN = 2;
 const ENTRYPOINT_FILE_RE = /(^|\/)(main|index)\.(jsx?|tsx?)$/i;
 const ENTRYPOINT_ALLOWED_TITLE_RE = /(入口|挂载|根节点|根组件|路由|Router|Provider|createRoot|hydrate|bootstrap|初始化\s*App|App\s*初始化)/i;
+const MODULE_MAPPING_IMPLEMENTATION_RE = /(实现|补充测试|补测试|测试用例|单元测试|生成|写入|落盘|diff|patch|重构|调用\s*Agent|创建.*组件|新增.*(展示|逻辑|功能|测试|组件)|添加.*(展示|逻辑|功能|测试|组件)|修改.*(逻辑|实现|组件|样式|测试)|展示.*字段)/i;
+const REVIEW_EVIDENCE_GAP_RE = /(无法确认|无法验证|未出现在(?:本次)?\s*diff|diff\s*缺失|证据不足|缺少证据|未提供.*diff|没有.*diff|无法从.*确认|无法审查|覆盖缺口|缺口风险|未覆盖|缺少.*测试|测试文件.*未出现)/i;
 
 function summarizeReasons(checks: StepCheck[]): string[] {
   return checks
@@ -84,6 +87,51 @@ function isFrontendEntrypointFile(file: string): boolean {
 
 function allowsEntrypointEdit(title: string): boolean {
   return ENTRYPOINT_ALLOWED_TITLE_RE.test(title);
+}
+
+function detectShadowedRouteComponent(
+  file: string,
+  fileSet: Set<string>,
+  workspaceDir?: string,
+): string | null {
+  const normalized = file.replaceAll("\\", "/");
+  const match = normalized.match(/^(.*\/routes\/)([^/]+)\.(jsx?|tsx?)$/i);
+  if (!match) return null;
+
+  const [, routeRoot, routeName, extension] = match;
+  const canonical = `${routeRoot}${routeName}/${routeName}.${extension}`;
+  if (fileSet.has(canonical)) return canonical;
+
+  if (workspaceDir && existsSync(path.resolve(workspaceDir, canonical))) {
+    return canonical;
+  }
+
+  return null;
+}
+
+function countClaimedStrategySteps(strategy: string) {
+  const explicitChineseStepCount = strategy.match(/分\s*([一二三四五六七八九十\d]+)\s*步/);
+  if (explicitChineseStepCount) {
+    const value = explicitChineseStepCount[1];
+    const chineseMap: Record<string, number> = {
+      一: 1,
+      二: 2,
+      三: 3,
+      四: 4,
+      五: 5,
+      六: 6,
+      七: 7,
+      八: 8,
+      九: 9,
+      十: 10,
+    };
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    if (chineseMap[value]) return chineseMap[value];
+  }
+
+  const numbered = strategy.match(/(?:^|[\s；;。])\d+[).)、]/g);
+  return numbered?.length ?? 0;
 }
 
 /**
@@ -206,7 +254,7 @@ export function verifyClarification(output: ClarificationOutput): VerifierResult
 /**
  * SolutionDsl 校验:
  *  - acceptanceCriteria 必须可测试(数量、长度)
- *  - dataContract 至少有一项
+ *  - dataContract 至少有实际内容
  *  - userStory 不能为空 placeholder
  */
 export function verifySolutionDsl(output: SolutionDsl): VerifierResult {
@@ -239,12 +287,16 @@ export function verifySolutionDsl(output: SolutionDsl): VerifierResult {
     });
   }
 
-  if (Object.keys(output.dataContract ?? {}).length === 0) {
+  const dataContractValues = Object.values(output.dataContract ?? {});
+  const hasDataContractContent = dataContractValues.some((value) => (
+    Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && String(value).trim().length > 0
+  ));
+  if (!hasDataContractContent) {
     checks.push({
       id: "solution.data_contract_empty",
       type: "factual",
       status: "warning",
-      message: "dataContract 为空,跨栈需求需要至少描述输入/输出结构",
+      message: "dataContract 没有实际内容,需要至少描述输入/输出/约束/验证提示之一",
     });
   }
 
@@ -267,8 +319,13 @@ export function verifyModuleMapping(
   const workspaceDir = workspace.workspaceDir;
   const missingFiles: string[] = [];
   const newFileClaims: string[] = [];
+  const boundaryOverreach: Array<{ module: string; reason: string }> = [];
 
   for (const mod of output.touchedModules) {
+    if (MODULE_MAPPING_IMPLEMENTATION_RE.test(mod.reason)) {
+      boundaryOverreach.push({ module: mod.name, reason: mod.reason });
+    }
+
     for (const file of mod.files) {
       const knownInScan = fileSet.has(file);
       const onDisk = workspaceDir
@@ -313,15 +370,20 @@ export function verifyModuleMapping(
     });
   }
 
+  if (boundaryOverreach.length > 0) {
+    checks.push({
+      id: "module_mapping.boundary_overreach",
+      type: "consistency",
+      status: "warning",
+      message: `定位代码阶段包含 ${boundaryOverreach.length} 条疑似实现/测试计划表述,应只保留定位依据`,
+      evidence: { boundaryOverreach },
+    });
+  }
+
   return { checks, qualityGate: decide(checks, { repairableOnFail: true }) };
 }
 
-/**
- * Code Generation Plan 校验:
- *  - 每个 task 必须至少包含 1 个文件路径;
- *  - testRequired=true 的 task 必须指定 testFiles;
- *  - testRequired 至少在 tasks 中出现一次 true(否则警告)。
- */
+/** Code Review 校验：审查结果不做自动修复，所有未通过项都交由用户选择 Retry 或 Continue。 */
 export function verifyCodeReviewResult(output: CodeReviewResult): VerifierResult {
   const checks: StepCheck[] = [];
 
@@ -337,6 +399,33 @@ export function verifyCodeReviewResult(output: CodeReviewResult): VerifierResult
 
   const blockers = (output.findings ?? []).filter((f) => f.severity === "blocker");
   const majors = (output.findings ?? []).filter((f) => f.severity === "major");
+  const failedChecklist = (output.checklist ?? []).filter((item) => item.status === "failed");
+  const evidenceGapText = [
+    output.summary,
+    ...(output.findings ?? []).flatMap((finding) => [finding.title, finding.detail, finding.recommendation ?? ""]),
+    ...(output.checklist ?? []).flatMap((item) => [item.label, item.detail ?? ""]),
+    ...(output.riskAreas ?? []),
+  ].join("\n");
+
+  if (output.decision === "approve" && failedChecklist.length > 0) {
+    checks.push({
+      id: "code_review.approve_with_failed_checklist",
+      type: "consistency",
+      status: "failed",
+      message: `decision=approve 但 checklist 中仍有 ${failedChecklist.length} 个 failed 项`,
+      evidence: { failedChecklist: failedChecklist.map((item) => item.id) },
+    });
+  }
+
+  if (output.decision === "approve" && REVIEW_EVIDENCE_GAP_RE.test(evidenceGapText)) {
+    checks.push({
+      id: "code_review.approve_with_evidence_gap",
+      type: "consistency",
+      status: "failed",
+      message: "审查结果承认存在无法确认/证据不足/diff 缺失,不能判定通过",
+    });
+  }
+
   if (blockers.length > 0) {
     checks.push({ id: "code_review.blockers", type: "factual", status: "failed", message: `${blockers.length} 个 blocker 级别问题` });
   }
@@ -349,7 +438,7 @@ export function verifyCodeReviewResult(output: CodeReviewResult): VerifierResult
     return { checks, qualityGate: { decision: "need-human", reasons: [`存在 ${blockers.length + majors.length} 个 blocker/major 问题`], confidence: 0.5, repairAttempts: 0 } };
   }
 
-  return { checks, qualityGate: decide(checks, { repairableOnFail: true }) };
+  return { checks, qualityGate: decide(checks, { repairableOnFail: false }) };
 }
 
 export function verifyCodeGenerationPlan(
@@ -359,10 +448,27 @@ export function verifyCodeGenerationPlan(
   const checks: StepCheck[] = [];
   const fileSet = new Set(workspace.repositoryScan.fileTree);
   const workspaceDir = workspace.workspaceDir;
+  const routeBindings = analyzeRouteBindings(workspace);
   const tasksWithoutFiles: string[] = [];
   const tasksWithSuspiciousPaths: string[] = [];
   const tasksWithoutTestFiles: string[] = [];
   const tasksWithUnjustifiedEntrypoints: string[] = [];
+  const tasksWithoutCriteriaRefs: string[] = [];
+  const tasksWithoutExpectedChange: string[] = [];
+  const tasksWithoutTestIntent: string[] = [];
+  const directoryLikePaths: string[] = [];
+  const shadowRouteFiles: string[] = [];
+  const claimedStrategySteps = countClaimedStrategySteps(output.strategy);
+
+  if (claimedStrategySteps > output.tasks.length) {
+    checks.push({
+      id: "code_generation.strategy_overclaims_tasks",
+      type: "consistency",
+      status: "failed",
+      message: `strategy 声称约 ${claimedStrategySteps} 个步骤,但 tasks 只有 ${output.tasks.length} 个；禁止声明未拆成任务的工作`,
+      evidence: { strategy: output.strategy, taskCount: output.tasks.length },
+    });
+  }
 
   for (const task of output.tasks) {
     if (task.files.length === 0) {
@@ -371,6 +477,12 @@ export function verifyCodeGenerationPlan(
     }
 
     const testFiles = (task as { testFiles?: string[] }).testFiles ?? [];
+    const acceptanceCriteriaRefs = (task as { acceptanceCriteriaRefs?: string[] }).acceptanceCriteriaRefs ?? [];
+    const expectedChange = (task as { expectedChange?: string }).expectedChange?.trim() ?? "";
+    const testIntent = (task as { testIntent?: string }).testIntent?.trim() ?? "";
+    if (acceptanceCriteriaRefs.length === 0) tasksWithoutCriteriaRefs.push(task.id);
+    if (!expectedChange) tasksWithoutExpectedChange.push(task.id);
+    if (!testIntent) tasksWithoutTestIntent.push(task.id);
     if (task.testRequired && testFiles.length === 0) {
       tasksWithoutTestFiles.push(task.id);
     }
@@ -381,10 +493,18 @@ export function verifyCodeGenerationPlan(
     }
 
     for (const file of [...task.files, ...testFiles]) {
+      if (file.endsWith("/") || file.endsWith("\\") || !path.basename(file).includes(".")) {
+        directoryLikePaths.push(`${task.id}:${file}`);
+      }
       const known = fileSet.has(file);
       const onDisk = workspaceDir
         ? existsSync(path.resolve(workspaceDir, file))
         : false;
+      const shadowedByExistingRoute = detectShadowedRouteComponent(file, fileSet, workspaceDir)
+        ?? findShadowedRouteBinding(file, routeBindings)?.boundFile;
+      if (shadowedByExistingRoute && file.replaceAll("\\", "/") !== shadowedByExistingRoute) {
+        shadowRouteFiles.push(`${task.id}:${file} -> ${shadowedByExistingRoute}`);
+      }
       // 允许新文件,但路径必须像项目内文件
       if (!known && !onDisk && (file.includes("..") || path.isAbsolute(file))) {
         tasksWithSuspiciousPaths.push(`${task.id}:${file}`);
@@ -412,6 +532,26 @@ export function verifyCodeGenerationPlan(
     });
   }
 
+  if (directoryLikePaths.length > 0) {
+    checks.push({
+      id: "code_generation.directory_like_paths",
+      type: "factual",
+      status: "failed",
+      message: `${directoryLikePaths.length} 个路径看起来像目录而不是具体文件`,
+      evidence: { tasks: directoryLikePaths },
+    });
+  }
+
+  if (shadowRouteFiles.length > 0) {
+    checks.push({
+      id: "code_generation.shadow_route_component",
+      type: "factual",
+      status: "failed",
+      message: `${shadowRouteFiles.length} 个任务试图新增平行页面文件,但项目已存在同名路由目录组件;应修改真实路由绑定组件`,
+      evidence: { tasks: shadowRouteFiles },
+    });
+  }
+
   if (tasksWithUnjustifiedEntrypoints.length > 0) {
     checks.push({
       id: "code_generation.unjustified_entrypoint_files",
@@ -429,6 +569,36 @@ export function verifyCodeGenerationPlan(
       status: "warning",
       message: `${tasksWithoutTestFiles.length} 个任务声明需补测试,但没有指定测试文件（code writer 会自动推导）`,
       evidence: { tasks: tasksWithoutTestFiles },
+    });
+  }
+
+  if (tasksWithoutCriteriaRefs.length > 0) {
+    checks.push({
+      id: "code_generation.missing_acceptance_refs",
+      type: "factual",
+      status: "warning",
+      message: `${tasksWithoutCriteriaRefs.length} 个任务没有映射验收标准`,
+      evidence: { tasks: tasksWithoutCriteriaRefs },
+    });
+  }
+
+  if (tasksWithoutExpectedChange.length > 0) {
+    checks.push({
+      id: "code_generation.missing_expected_change",
+      type: "factual",
+      status: "warning",
+      message: `${tasksWithoutExpectedChange.length} 个任务缺少 expectedChange`,
+      evidence: { tasks: tasksWithoutExpectedChange },
+    });
+  }
+
+  if (tasksWithoutTestIntent.length > 0) {
+    checks.push({
+      id: "code_generation.missing_test_intent",
+      type: "factual",
+      status: "warning",
+      message: `${tasksWithoutTestIntent.length} 个任务缺少 testIntent`,
+      evidence: { tasks: tasksWithoutTestIntent },
     });
   }
 
@@ -563,8 +733,13 @@ export function verifyVerification(output: VerificationResult): VerifierResult {
       id: `verification.cmd_failed.${cmd.label}`,
       type: "command",
       status: "failed",
-      message: `${cmd.label} 命令失败 (exit=${cmd.exitCode}): ${cmd.command}`,
-      evidence: { stderrPreview: cmd.stderrPreview, durationMs: cmd.durationMs },
+      message: cmd.failureSummary ?? `${cmd.label} 命令失败 (exit=${cmd.exitCode}): ${cmd.command}`,
+      evidence: {
+        stderrPreview: cmd.stderrPreview,
+        durationMs: cmd.durationMs,
+        failureKind: cmd.failureKind,
+        suggestedAction: cmd.suggestedAction,
+      },
     });
   }
 

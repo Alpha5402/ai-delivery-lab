@@ -261,7 +261,7 @@ describe("workflowService", () => {
       targetRepo: "conduit",
     });
     const updated = updateStepOutput(run.id, "solution_design", { requirementId: "manual-edit" });
-    const replayed = replayFromStep(updated.id, "solution_design");
+    const replayed = await replayFromStep(updated.id, "solution_design");
     const solutionStep = replayed.steps.find((step) => step.id === "solution_design");
     const moduleStep = replayed.steps.find((step) => step.id === "module_mapping");
 
@@ -300,12 +300,12 @@ describe("workflowService", () => {
     const updated = updateStepOutput(run.id, "clarification", {
       summary: "restorable", questions: [], confidence: 0.9, decisions: [], clarificationComplete: false,
     });
-    const replayed = replayFromStep(updated.id, "clarification");
+    const replayed = await replayFromStep(updated.id, "clarification");
     const history = getStepHistory(replayed.id, "clarification");
     expect(history.length).toBe(1);
     const snapId = history[0].id;
 
-    const restored = restoreStepSnapshot(replayed.id, "clarification", snapId);
+    const restored = await restoreStepSnapshot(replayed.id, "clarification", snapId);
     expect(restored.steps[1].status).toBe("waiting-human");
     expect(restored.steps[1].output).toBeDefined();
     expect(restored.activeStepId).toBe("clarification");
@@ -346,7 +346,7 @@ describe("workflowService", () => {
     live.steps[3].replayCount = 1;
 
     // 3. 调用 restoreStepSnapshot——不传 replayDownstream
-    const restored = restoreStepSnapshot(run.id, "clarification", snapId);
+    const restored = await restoreStepSnapshot(run.id, "clarification", snapId);
 
     // 4. 当前 step 应恢复为 waiting-human
     expect(restored.steps[1].status).toBe("waiting-human");
@@ -398,7 +398,7 @@ describe("workflowService", () => {
     live.steps[2].output = { requirementId: "r1" };
 
     // 其余所有下游保持原始 idle state（createWorkflowRun 的初始状态）
-    const restored = restoreStepSnapshot(run.id, "clarification", snapId);
+    const restored = await restoreStepSnapshot(run.id, "clarification", snapId);
 
     // 已执行的 solution_design: 有失效日志
     expect(restored.steps[2].status).toBe("idle");
@@ -429,7 +429,7 @@ describe("workflowService", () => {
     // 上游 step (clarification) 也设一个 intervention
     live.steps[1].interventions = [{ id: "past-int", stepId: "clarification", role: "user", content: "past decision", createdAt: "" }];
 
-    const replayed = replayFromStep(run.id, "solution_design");
+    const replayed = await replayFromStep(run.id, "solution_design");
 
     // replay 起点 step 和下游的 interventions 应被清空
     expect(replayed.steps[2].interventions).toEqual([]);

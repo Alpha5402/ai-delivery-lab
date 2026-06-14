@@ -95,7 +95,8 @@ export type ConfirmationPolicyAddon = z.infer<typeof confirmationPolicyAddonSche
  */
 export type SkillManifest = z.infer<typeof skillManifestSchema> & {
   /** 注册来源 */
-  source?: "builtin" | "json";
+  source?: "builtin" | "json" | "project";
+  baseSkillId?: string;
 };
 
 /** Skill 命中原因的简要描述，用于 UI 展示 */

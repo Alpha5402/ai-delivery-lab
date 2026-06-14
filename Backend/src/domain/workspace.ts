@@ -63,6 +63,40 @@ export type WorkspaceContext = {
   createdAt: string;
 };
 
+export type VerificationCommandSetting = {
+  id: string;
+  name: string;
+  command: string;
+  enabled: boolean;
+};
+
+export type ProjectSkillSetting = {
+  id: string;
+  baseSkillId?: string;
+  enabled: boolean;
+  name?: string;
+  description?: string;
+  version?: string;
+  requirementPatterns?: string[];
+  scopes?: string[];
+  match?: {
+    keywords?: string[];
+    fileGlobs?: string[];
+    routeHints?: string[];
+  };
+  steps?: Record<string, unknown>;
+};
+
+export type ProjectSettings = {
+  projectId: string;
+  verificationCommands: VerificationCommandSetting[];
+  stepExecutionModes: Record<string, "automatic" | "manual-confirmation">;
+  selectedLlmModelId?: string;
+  excludedPublicSkillIds: string[];
+  projectSkills: ProjectSkillSetting[];
+  updatedAt: string;
+};
+
 export type WorkspaceSummary = {
   id: string;
   repoName: string;
@@ -86,10 +120,50 @@ export type WorkflowRunSummary = {
   currentStep?: string;
   createdAt: string;
   updatedAt: string;
+  caseId?: string;
+  caseFavorited?: boolean;
 };
 
 export type ProjectWorkspace = WorkspaceSummary & {
   name: string;
   path: string;
   workflowRuns: WorkflowRunSummary[];
+};
+
+export type RequirementCase = {
+  id: string;
+  projectId: string;
+  workspaceId: string;
+  createdFromRunId: string;
+  title: string;
+  rawRequirement: string;
+  requirementPattern: string;
+  requirementSummary: string;
+  acceptedConstraints: string[];
+  solutionSummary: string;
+  touchedFiles: string[];
+  codeTasks: string[];
+  verificationSummary: string;
+  pullRequestUrl?: string;
+  tags: string[];
+  stack: string[];
+  keywords: string[];
+  embeddingText?: string;
+  embedding?: number[];
+  embeddingModel?: string;
+  embeddingUpdatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RecalledRequirementCase = {
+  id: string;
+  title: string;
+  summary: string;
+  matchedReasons: string[];
+  score: number;
+  ruleScore?: number;
+  embeddingScore?: number;
+  touchedFiles: string[];
+  createdFromRunId: string;
 };

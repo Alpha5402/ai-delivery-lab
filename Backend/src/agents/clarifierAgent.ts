@@ -3,7 +3,7 @@ import {
   type RequirementDraft,
   clarificationOutputSchema,
 } from "../domain/workflow.js";
-import { callJsonLlmWithSchema } from "../services/llmClient.js";
+import { callJsonLlmWithSchema, getLlmUsageFromError } from "../services/llmClient.js";
 import { recordMetric } from "../services/metricsService.js";
 
 import type { RuntimeMemoryContext } from "../services/workflowMemory.js";
@@ -108,6 +108,7 @@ export async function runClarifierAgent(
     }
   }
 
+  const agentName = followUp ? "确认需求（反馈）" : "确认需求";
   const result = await callJsonLlmWithSchema([
     {
       role: "system",
@@ -117,10 +118,23 @@ export async function runClarifierAgent(
       role: "user",
       content: JSON.stringify(userPayload),
     },
-  ], clarificationOutputSchema, { label: followUp ? "确认需求（反馈）" : "确认需求" });
+  ], clarificationOutputSchema, { label: agentName }).catch((error) => {
+    const usage = getLlmUsageFromError(error);
+    if (usage) {
+      recordMetric({
+        agent: agentName,
+        calls: 1,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        latencyMs: usage.latencyMs,
+        estimatedCost: 0,
+      });
+    }
+    throw error;
+  });
 
   recordMetric({
-    agent: followUp ? "确认需求（反馈）" : "确认需求",
+    agent: agentName,
     calls: 1,
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,
@@ -129,5 +143,15 @@ export async function runClarifierAgent(
   });
 
   // Zod .default() 的 TS 类型推断有时给 input type；safeParse 保证 output fields 已 fill
-  return result.content as ClarificationOutput;
+  return {
+    ...(result.content as ClarificationOutput),
+    __metrics: [{
+      agent: agentName,
+      calls: 1,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      latencyMs: result.latencyMs,
+      estimatedCost: 0,
+    }],
+  } as ClarificationOutput;
 }

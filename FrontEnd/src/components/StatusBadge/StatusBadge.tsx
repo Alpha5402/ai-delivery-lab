@@ -11,5 +11,5 @@ const config: Record<StepStatus, { label: string; color: string }> = {
 
 export function StatusBadge({ status }: { status: StepStatus }) {
   const { label, color } = config[status];
-  return <Tag color={color}>{label}</Tag>;
+  return <Tag color={color} variant="filled">{label}</Tag>;
 }

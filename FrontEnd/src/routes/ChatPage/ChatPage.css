@@ -253,6 +253,118 @@
   margin-bottom: 4px;
 }
 
+.project-settings-panel,
+.project-settings-command-list,
+.project-settings-mode-list,
+.project-settings-skill-list {
+  display: grid;
+  gap: 12px;
+}
+
+.project-settings-panel__head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.project-settings-command,
+.project-settings-mode,
+.project-settings-skill {
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.project-settings-command {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(140px, 0.45fr) minmax(260px, 1fr) auto;
+}
+
+.project-settings-mode {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.project-settings-mode strong {
+  display: block;
+}
+
+.project-settings-mode span {
+  color: var(--color-muted);
+  display: block;
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.project-settings-skill-select,
+.project-settings-llm-select {
+  min-width: 280px;
+}
+
+.project-settings-skill {
+  display: grid;
+  gap: 12px;
+}
+
+.project-settings-skill-section {
+  display: grid;
+  gap: 10px;
+}
+
+.project-settings-skill-section > strong {
+  color: #111827;
+  font-size: 14px;
+}
+
+.project-settings-skill--compact {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.project-settings-skill__meta strong,
+.project-settings-skill__meta span {
+  display: block;
+}
+
+.project-settings-skill__meta span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.project-settings-skill__head {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(150px, 0.6fr) minmax(220px, 1fr) auto;
+}
+
+.project-settings-skill__grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.project-settings-skill__grid label,
+.project-settings-skill__description {
+  display: grid;
+  gap: 6px;
+}
+
+.project-settings-skill__grid span,
+.project-settings-skill__description span {
+  color: #475467;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .workflow-preview__step p {
   color: var(--color-muted);
   font-size: 12px;
@@ -343,10 +455,7 @@
 }
 
 .workflow-run-card__status.ant-tag {
-  align-items: center;
-  display: inline-flex;
   justify-self: start;
-  margin: 0;
   width: fit-content;
 }
 
@@ -360,6 +469,44 @@
 .workflow-delete-warning {
   color: #d92d20;
   font-weight: 800;
+}
+
+.case-library-row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.case-library-row strong {
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.case-library-row span {
+  color: var(--color-muted);
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.case-library-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.case-library-detail ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.case-library-detail li {
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .suggested-tasks__header {

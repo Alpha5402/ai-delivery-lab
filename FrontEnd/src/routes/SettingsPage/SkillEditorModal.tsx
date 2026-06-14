@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button, Form, Input, Modal, Select, Space, Tabs, Typography, message } from "antd";
 import { createJsonSkill, updateJsonSkill, type SkillManifest } from "../../api/client";
-import type { WorkflowStepId } from "../../features/workflow/types";
-import { stepLabels } from "../../features/workflow/stepDefinitions";
+import { useDefaultWorkflowTemplate } from "../../features/workflow/workflowTemplate";
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -11,6 +10,7 @@ type SkillEditorProps = {
   open: boolean;
   editingSkill: SkillManifest | null; // null = create new
   onClose: (saved: boolean) => void;
+  onSaveManifest?: (manifest: Record<string, unknown>) => Promise<void> | void;
 };
 
 type FormValues = {
@@ -79,9 +79,10 @@ function formToManifest(values: FormValues, existingSteps?: Record<string, unkno
   };
 }
 
-export function SkillEditorModal({ open, editingSkill, onClose }: SkillEditorProps) {
+export function SkillEditorModal({ open, editingSkill, onClose, onSaveManifest }: SkillEditorProps) {
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
+  const { template } = useDefaultWorkflowTemplate();
   const isCreate = !editingSkill;
 
   useEffect(() => {
@@ -103,7 +104,9 @@ export function SkillEditorModal({ open, editingSkill, onClose }: SkillEditorPro
     setSaving(true);
     try {
       const manifest = formToManifest(values, (editingSkill?.steps ?? {}) as Record<string, unknown>);
-      if (isCreate) {
+      if (onSaveManifest) {
+        await onSaveManifest(manifest);
+      } else if (isCreate) {
         await createJsonSkill(manifest);
       } else {
         await updateJsonSkill(values.id, manifest);
@@ -118,17 +121,18 @@ export function SkillEditorModal({ open, editingSkill, onClose }: SkillEditorPro
   }
 
   const patternOptions = [
-    { label: "frontend-only", value: "frontend-only" },
-    { label: "cross-stack", value: "cross-stack" },
-    { label: "interaction", value: "interaction" },
-    { label: "unclear", value: "unclear" },
+    { label: "仅前端（frontend-only）", value: "frontend-only" },
+    { label: "前后端联动（cross-stack）", value: "cross-stack" },
+    { label: "交互改动（interaction）", value: "interaction" },
+    { label: "未明确（unclear）", value: "unclear" },
   ];
   const scopeOptions = [
-    { label: "frontend", value: "frontend" },
-    { label: "backend", value: "backend" },
-    { label: "fullstack", value: "fullstack" },
+    { label: "前端（frontend）", value: "frontend" },
+    { label: "后端（backend）", value: "backend" },
+    { label: "全栈（fullstack）", value: "fullstack" },
   ];
-  const stepOptions = Object.entries(stepLabels).map(([id, label]) => ({ label: `${label} (${id})`, value: id }));
+  const stepLabelMap = Object.fromEntries(template.steps.map((step) => [step.id, step.label]));
+  const stepOptions = template.steps.map((step) => ({ label: `${step.label} (${step.id})`, value: step.id }));
 
   const values = Form.useWatch([], form) as FormValues | undefined;
   const previewManifest = values ? formToManifest(values) : null;
@@ -150,10 +154,10 @@ export function SkillEditorModal({ open, editingSkill, onClose }: SkillEditorPro
             children: (
               <>
                 <Space style={{ width: "100%", justifyContent: "space-between" }}>
-                  <Form.Item name="id" label="ID" rules={[{ required: true, pattern: /^[a-z0-9][-a-z0-9]*[a-z0-9]?$/i, message: "slug 格式" }]} style={{ flex: 1 }}>
+                  <Form.Item name="id" label="标识 ID" rules={[{ required: true, pattern: /^[a-z0-9][-a-z0-9]*[a-z0-9]?$/i, message: "请输入 slug 格式，例如 my-skill" }]} style={{ flex: 1 }}>
                     <Input disabled={!isCreate} placeholder="my-skill-id" />
                   </Form.Item>
-                  <Form.Item name="version" label="Version" initialValue="1.0.0" style={{ width: 100 }}>
+                  <Form.Item name="version" label="版本" initialValue="1.0.0" style={{ width: 100 }}>
                     <Input placeholder="1.0.0" />
                   </Form.Item>
                 </Space>
@@ -190,7 +194,7 @@ export function SkillEditorModal({ open, editingSkill, onClose }: SkillEditorPro
                       <div style={{ marginBottom: 16 }}>
                         <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>步骤提示词配置</Text>
                         {steps.map((sid) => (
-                          <Form.Item key={sid} name={["_stepInstruction", sid]} label={`${stepLabels[sid as WorkflowStepId] ?? sid} 提示词`} style={{ marginBottom: 8 }}>
+                          <Form.Item key={sid} name={["_stepInstruction", sid]} label={`${stepLabelMap[sid] ?? sid} 提示词`} style={{ marginBottom: 8 }}>
                             <TextArea rows={2} placeholder={`针对 ${sid} 的约束和提示`} />
                           </Form.Item>
                         ))}
@@ -211,7 +215,7 @@ export function SkillEditorModal({ open, editingSkill, onClose }: SkillEditorPro
             ),
           }, {
             key: "json",
-            label: "预览 JSON",
+            label: "配置预览",
             children: previewManifest ? (
               <pre style={{ fontSize: 11, maxHeight: 300, overflow: "auto", background: "#f5f5f5", padding: 8, borderRadius: 4 }}>
                 {JSON.stringify(previewManifest, null, 2)}
@@ -222,10 +226,10 @@ export function SkillEditorModal({ open, editingSkill, onClose }: SkillEditorPro
         />
 
         <Space>
-          <Button type="primary" htmlType="submit" loading={saving}>
+          <Button className="settings-page__skill-button settings-page__skill-button--primary" htmlType="submit" loading={saving}>
             {isCreate ? "创建" : "保存"}
           </Button>
-          <Button onClick={() => onClose(false)}>取消</Button>
+          <Button className="settings-page__skill-button" onClick={() => onClose(false)}>取消</Button>
         </Space>
       </Form>
     </Modal>

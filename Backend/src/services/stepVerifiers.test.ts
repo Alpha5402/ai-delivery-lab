@@ -204,6 +204,37 @@ describe("stepVerifiers", () => {
       }));
       expect(result.checks.some((c) => c.id === "code_generation.unjustified_entrypoint_files")).toBe(false);
     });
+
+    it("fails when a task targets a parallel route file instead of the routed component", () => {
+      const output: CodeGenerationPlan = {
+        strategy: "incremental",
+        tasks: [
+          {
+            id: "t1",
+            title: "在文章详情页展示字数统计",
+            files: ["frontend/src/routes/Article.jsx"],
+            testRequired: true,
+            testFiles: ["frontend/src/helpers/wordCount.test.js"],
+          },
+        ],
+      };
+      const result = verifyCodeGenerationPlan(output, makeWorkspace({
+        repositoryScan: {
+          ...makeWorkspace().repositoryScan,
+          fileTree: [
+            "frontend/src/main.jsx",
+            "frontend/src/routes/Article/Article.jsx",
+            "frontend/src/helpers/wordCount.test.js",
+          ],
+          keyFiles: {
+            "frontend/src/main.jsx": 'import Article from "./routes/Article/Article";\n',
+          },
+        },
+      }));
+
+      expect(result.checks.find((c) => c.id === "code_generation.shadow_route_component")?.status).toBe("failed");
+      expect(result.qualityGate.decision).toBe("repair");
+    });
   });
 
   describe("verifyRepoWrite", () => {
@@ -235,7 +266,7 @@ describe("stepVerifiers", () => {
   });
 
   describe("verifyVerification", () => {
-    it("requires human when no real commands executed", () => {
+    it("auto-continues when no real commands are available", () => {
       const output: VerificationResult = {
         lint: "not_executed",
         unitTests: "not_executed",
@@ -247,7 +278,7 @@ describe("stepVerifiers", () => {
         diagnosis: "",
       };
       const result = verifyVerification(output);
-      expect(result.qualityGate.decision).toBe("need-human");
+      expect(result.qualityGate.decision).toBe("auto-continue");
     });
 
     it("auto-continues when commands all passed", () => {
@@ -310,6 +341,37 @@ describe("stepVerifiers", () => {
       };
       const result = verifyVerification(output);
       expect(result.qualityGate.decision).toBe("repair");
+    });
+
+    it("uses friendly verification failure summaries when present", () => {
+      const output: VerificationResult = {
+        lint: "passed",
+        unitTests: "failed",
+        build: "not_configured",
+        typecheck: "not_configured",
+        coverage: null,
+        testSuites: [],
+        commands: [
+          {
+            label: "unit_tests",
+            command: "npm test -- --run",
+            cwd: "/tmp",
+            exitCode: 1,
+            durationMs: 200,
+            status: "failed",
+            stdoutPreview: "",
+            stderrPreview: "Cannot find package 'jsdom'",
+            failureKind: "missing_dependency",
+            failureSummary: "单元测试未能启动：项目配置了 Vitest jsdom 测试环境，但当前依赖中缺少 jsdom。",
+            suggestedAction: "在对应工作区安装缺失依赖：npm install -D jsdom。",
+          },
+        ],
+        diagnosis: "",
+      };
+      const result = verifyVerification(output);
+
+      expect(result.qualityGate.decision).toBe("repair");
+      expect(result.checks.find((c) => c.id === "verification.cmd_failed.unit_tests")?.message).toContain("缺少 jsdom");
     });
   });
 

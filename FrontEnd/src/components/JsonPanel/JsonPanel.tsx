@@ -15,10 +15,10 @@ export function JsonPanel({ title, value, editable, onSave }: { title: string; v
           <h3>{title}</h3>
         </div>
         <Space>
-          <Button size="small" onClick={editor.format}>格式化</Button>
+          <Button className="settings-page__skill-button" size="small" onClick={editor.format}>格式化</Button>
           <Button
+            className="settings-page__skill-button settings-page__skill-button--primary"
             size="small"
-            type="primary"
             disabled={!editable || !editor.parsed.ok}
             onClick={() => editor.parsed.ok && onSave(editor.parsed.value)}
           >

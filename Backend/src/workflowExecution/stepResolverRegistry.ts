@@ -1,5 +1,6 @@
 import type { ClarificationOutput, RequirementDraft, WorkflowRun, WorkflowStepId } from "../domain/workflow.js";
 import { stepOrder } from "../domain/workflow.js";
+import type { SkillStepSpecResult } from "../skills/skillRegistry.js";
 
 export type StepResolveContext = {
   run: WorkflowRun;
@@ -61,6 +62,7 @@ export function registerDefaultStepResolvers(
     runWorkflowStepAgent: (stepId: WorkflowStepId, run: WorkflowRun, options?: WorkflowStepRunOptions) => Promise<unknown>;
     getStepOutput: <T>(run: WorkflowRun, stepId: WorkflowStepId) => T;
     buildRuntimeMemoryContext: (run: WorkflowRun, stepId: WorkflowStepId) => unknown;
+    resolveSkillStepSpec?: (run: WorkflowRun, stepId: WorkflowStepId) => SkillStepSpecResult;
   },
 ): void {
   for (const stepId of stepOrder) {
@@ -103,7 +105,8 @@ export function registerDefaultStepResolvers(
           const requirement = impl.getStepOutput<RequirementDraft>(ctx.run, "requirement_intake");
           const clarification = impl.getStepOutput<ClarificationOutput>(ctx.run, "clarification");
           const runtimeMemory = impl.buildRuntimeMemoryContext(ctx.run, "solution_design");
-          return impl.runPlannerAgent(requirement, clarification, { runtimeMemory });
+          const skillSpec = impl.resolveSkillStepSpec?.(ctx.run, "solution_design");
+          return impl.runPlannerAgent(requirement, clarification, { runtimeMemory, skillSpec });
         };
         break;
       }

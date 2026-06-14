@@ -2,11 +2,10 @@
  * Step Router
  *
  * 基于 RequirementDraft.pattern 与 SolutionDsl.scope 决定动态行为:
- *  - module_mapping 是否需要追加前端/后端关注;
  *  - verification 哪些命令必须执行 / 可以跳过;
  *  - 是否需要触发追问澄清。
  *
- * 设计原则: 主干 7 步流程仍然确定性,这里只调整每步内部的"措辞 + 命令选择",
+ * 设计原则: 主干 8 步流程仍然确定性,这里只调整每步内部的"措辞 + 命令选择",
  *   不引入跳步等不可控行为。
  */
 
@@ -48,20 +47,18 @@ function deriveScope(
   return "unknown";
 }
 
-/**
- * 给 module_mapping 的 LLM instruction 追加 scope 提示。
- */
+/** @deprecated 新版 workflow 已移除独立 module_mapping，代码定位由 code_generation 内聚完成。 */
 export function moduleMappingInstructionAddon(ctx: RouterContext): string {
   if (ctx.scope === "frontend") {
-    return "  · 当前需求 scope=frontend,只关注前端组件/路由/样式/前端测试,不要列出后端 routes/models/migrations。";
+    return "  · 当前需求 scope=frontend,只定位可能受影响的前端组件/路由/样式/前端测试文件范围；不要列出后端 routes/models/migrations；不要输出实现方案或测试计划。";
   }
   if (ctx.scope === "backend") {
-    return "  · 当前需求 scope=backend,只关注后端 routes/services/migrations/单测,不要列出前端组件。";
+    return "  · 当前需求 scope=backend,只定位可能受影响的后端 routes/services/migrations/单测文件范围；不要列出前端组件；不要输出实现方案或测试计划。";
   }
   if (ctx.scope === "fullstack") {
-    return "  · 当前需求 scope=fullstack,前后端都要列出 touchedModules,且 API 契约要在双方都能找到对应文件。";
+    return "  · 当前需求 scope=fullstack,前后端都要列出 touchedModules,且 API 契约要在双方都能找到对应文件；只说明定位依据，不要输出跨端实现步骤。";
   }
-  return "  · 当前需求 scope 未确定,优先列出主入口模块。";
+  return "  · 当前需求 scope 未确定,优先列出主入口模块和定位依据，不要输出实现方案或测试计划。";
 }
 
 /**

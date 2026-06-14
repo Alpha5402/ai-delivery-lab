@@ -19,7 +19,7 @@ import { workflowEventBus } from "./workflowEvents.js";
  * 当前语义：
  *  - 高风险/语义决策步骤(clarification、solution_design、code_generation、pull_request)
  *    默认需要人工确认;
- *  - 低风险/事实采集步骤(requirement_intake、module_mapping、verification)
+ *  - 低风险/事实采集步骤(requirement_intake、verification)
  *    默认自动续跑,但都被 Quality Gate 二次约束。
  *  - code_generation 会真实生成并写入文件，落盘完成后必须等待用户确认再进入验证。
  *  用户可在 Settings 页覆盖。
@@ -68,15 +68,31 @@ const optionalStepsSchema = z.object({
   code_review: z.boolean().default(true),
 }).default({ code_review: true });
 
+const customVerificationCommandSchema = z.object({
+  id: z.string().min(1).max(80),
+  name: z.string().min(1).max(80),
+  command: z.string().min(1).max(500),
+  enabled: z.boolean().default(true),
+});
+
+const defaultCustomVerificationCommands: Array<z.infer<typeof customVerificationCommandSchema>> = [
+  { id: "typecheck", name: "TypeScript", command: "npm run typecheck", enabled: true },
+  { id: "lint", name: "ESLint", command: "npm run lint", enabled: true },
+  { id: "unit-tests", name: "单元测试", command: "npm test -- --run", enabled: true },
+  { id: "build", name: "Build", command: "npm run build", enabled: true },
+];
+
 const workflowSettingsStoredSchema = z.object({
   stepExecutionModes: z.record(z.enum(workflowStepIds), stepExecutionModeSchema),
   git: gitSettingsStoredSchema,
   enabledOptionalSteps: optionalStepsSchema,
+  customVerificationCommands: z.array(customVerificationCommandSchema).default(defaultCustomVerificationCommands),
 });
 
 export const workflowSettingsPatchSchema = z.object({
   stepExecutionModes: z.record(z.enum(workflowStepIds), stepExecutionModeSchema).optional(),
   enabledOptionalSteps: optionalStepsSchema.optional(),
+  customVerificationCommands: z.array(customVerificationCommandSchema).optional(),
   git: z.object({
     userName: z.string().optional(),
     userEmail: z.string().optional(),
@@ -93,11 +109,13 @@ type StoredWorkflowSettings = z.infer<typeof workflowSettingsStoredSchema>;
 export type WorkflowSettings = {
   stepExecutionModes: Record<WorkflowStepId, StepExecutionMode>;
   enabledOptionalSteps: { code_review: boolean };
+  customVerificationCommands: Array<z.infer<typeof customVerificationCommandSchema>>;
   git: {
     userName?: string;
     userEmail?: string;
     githubTokenConfigured: boolean;
     githubTokenSource: "settings" | "env" | "none";
+    githubTokenMasked: string;
     githubOwner?: string;
     githubRepo?: string;
     githubBaseBranch: string;
@@ -143,6 +161,10 @@ function encryptSecret(value: string) {
   return `v1:${iv.toString("base64")}:${tag.toString("base64")}:${encrypted.toString("base64")}`;
 }
 
+function maskSecret(value: string | undefined) {
+  return value ? "*".repeat(value.length) : "";
+}
+
 function decryptSecret(value: string | undefined) {
   if (!value) return undefined;
   try {
@@ -160,7 +182,12 @@ function decryptSecret(value: string | undefined) {
 }
 
 function createDefaultStoredSettings(): StoredWorkflowSettings {
-  return { stepExecutionModes: { ...defaultStepExecutionModes }, git: {}, enabledOptionalSteps: { code_review: true } };
+  return {
+    stepExecutionModes: { ...defaultStepExecutionModes },
+    git: {},
+    enabledOptionalSteps: { code_review: true },
+    customVerificationCommands: defaultCustomVerificationCommands,
+  };
 }
 
 function normalizeStepExecutionModes(
@@ -185,11 +212,13 @@ function toPublicSettings(settings: StoredWorkflowSettings): WorkflowSettings {
   return {
     stepExecutionModes: normalizeStepExecutionModes(settings.stepExecutionModes),
     enabledOptionalSteps: settings.enabledOptionalSteps ?? { code_review: true },
+    customVerificationCommands: settings.customVerificationCommands ?? defaultCustomVerificationCommands,
     git: {
       userName: settings.git.userName ?? env.GIT_USER_NAME,
       userEmail: settings.git.userEmail ?? env.GIT_USER_EMAIL,
       githubTokenConfigured: Boolean(settingsToken || envToken),
       githubTokenSource: tokenSource,
+      githubTokenMasked: maskSecret(settingsToken || envToken),
       githubOwner: settings.git.githubOwner ?? env.GITHUB_OWNER,
       githubRepo: settings.git.githubRepo ?? env.GITHUB_REPO,
       githubBaseBranch: settings.git.githubBaseBranch ?? env.GITHUB_BASE_BRANCH,
@@ -214,6 +243,7 @@ function readFromDisk(): StoredWorkflowSettings {
       stepExecutionModes: normalizeStepExecutionModes(parsed.data.stepExecutionModes),
       git: parsed.data.git ?? {},
       enabledOptionalSteps: parsed.data.enabledOptionalSteps ?? { code_review: true },
+      customVerificationCommands: parsed.data.customVerificationCommands ?? defaultCustomVerificationCommands,
     };
   } catch {
     return createDefaultStoredSettings();
@@ -288,6 +318,7 @@ export function updateWorkflowSettings(patch: WorkflowSettingsPatch): WorkflowSe
       ...current.enabledOptionalSteps,
       ...(patch.enabledOptionalSteps ?? {}),
     },
+    customVerificationCommands: patch.customVerificationCommands ?? current.customVerificationCommands ?? [],
   };
   if (patch.git?.clearGithubToken) {
     delete next.git.encryptedGithubToken;
@@ -302,6 +333,11 @@ export function updateWorkflowSettings(patch: WorkflowSettingsPatch): WorkflowSe
   const publicSettings = toPublicSettings(next);
   workflowEventBus.emitSettingsChanged(publicSettings);
   return publicSettings;
+}
+
+export function getCustomVerificationCommands() {
+  const settings = cached ?? readFromDisk();
+  return settings.customVerificationCommands ?? defaultCustomVerificationCommands;
 }
 
 export function resetWorkflowSettings(): WorkflowSettings {

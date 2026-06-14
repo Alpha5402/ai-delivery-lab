@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { AgentReadmeResult, RepositoryScanResult } from "../domain/workspace.js";
-import { callJsonLlmWithSchema, type ChatMessage } from "../services/llmClient.js";
+import { callJsonLlmWithSchema, getLlmUsageFromError, type ChatMessage } from "../services/llmClient.js";
 import { recordMetric } from "../services/metricsService.js";
 import { logWorkspaceEvent } from "../services/workspaceLogger.js";
 
@@ -40,7 +40,21 @@ export async function generateAgentReadme(repoName: string, scan: RepositoryScan
     keyFiles: Object.keys(scan.keyFiles),
   });
 
-  const result = await callJsonLlmWithSchema(buildRepositoryContextMessages(repoName, scan), agentReadmeSchema, { label: "Repository Context Agent" });
+  const result = await callJsonLlmWithSchema(buildRepositoryContextMessages(repoName, scan), agentReadmeSchema, { label: "Repository Context Agent" })
+    .catch((error) => {
+      const usage = getLlmUsageFromError(error);
+      if (usage) {
+        recordMetric({
+          agent: "Repository Context Agent",
+          calls: 1,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          latencyMs: usage.latencyMs,
+          estimatedCost: 0,
+        });
+      }
+      throw error;
+    });
 
   recordMetric({
     agent: "Repository Context Agent",

@@ -4,7 +4,7 @@ import type { SkillManifest } from "../skillTypes.js";
  * frontend-display-computed-metric
  *
  * 匹配前端-only 的计算指标展示需求（如字数统计、阅读时长、阅读量展示）。
- * 影响 module_mapping、code_generation、verification 三个 step 的 prompt。
+ * 主要影响 code_generation、verification。
  */
 export const frontendDisplayComputedMetric: SkillManifest = {
   id: "frontend-display-computed-metric",
@@ -18,19 +18,22 @@ export const frontendDisplayComputedMetric: SkillManifest = {
       "展示", "指标", "computed", "metric", "view count",
       "like count", "点赞数", "评论数", "字符数",
     ],
-    fileGlobs: ["src/components/**/*.tsx", "src/routes/**/*.tsx", "src/hooks/**", "src/utils/**"],
+    fileGlobs: [
+      "src/components/**/*.js",
+      "src/components/**/*.jsx",
+      "src/components/**/*.ts",
+      "src/components/**/*.tsx",
+      "src/routes/**/*.js",
+      "src/routes/**/*.jsx",
+      "src/routes/**/*.ts",
+      "src/routes/**/*.tsx",
+      "src/hooks/**",
+      "src/utils/**",
+      "src/helpers/**",
+    ],
     routeHints: ["Article", "Post", "文章", "body", "markdown", "page", "component"],
   },
   steps: {
-    module_mapping: {
-      instructionAddon: [
-        "  · 前端计算指标展示 Skill 已激活：优先定位以下模式。",
-        "    1. 展示组件：渲染指标值的 UI 组件",
-        "    2. 计算逻辑：hook/util 中的纯计算函数（不要重复实现）",
-        "    3. 数据源：API 响应字段 / store selector / props",
-        "  · 确认计算逻辑与展示逻辑是否分离，如未分离建议在 reason 中提出重构方向。",
-      ].join("\n"),
-    },
     code_generation: {
       instructionAddon: [
         "  · 前端计算指标展示 Skill 已激活：生成代码需区分三类任务。",
@@ -38,6 +41,10 @@ export const frontendDisplayComputedMetric: SkillManifest = {
         "  · 纯逻辑：计算函数（字数、阅读时长等），要求纯函数且可测试",
         "  · 边界：空字符串、超长文本、特殊字符（Markdown 标记/HTML 标签）的处理",
         "  · testRequired 对纯逻辑任务必须为 true。",
+        "  · expectedChange 必须分别说明计算逻辑如何接入数据源、UI 展示位置、边界处理方式。",
+        "  · 页面展示必须接入现有路由真实使用的页面组件；如果已有 routes/Article/Article.jsx，不要新增 routes/Article.jsx 这种平行页面。",
+        "  · 新增 helper/component 后，必须在真实页面组件中 import 并使用，否则视为未完成接入。",
+        "  · testIntent 必须覆盖纯函数边界，而不是只写组件能渲染。",
       ].join("\n"),
     },
     verification: {

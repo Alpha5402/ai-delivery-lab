@@ -77,7 +77,7 @@ export function registerDefaultStepVerifiers(
     module_mapping: withWorkspaceFallback("module_mapping", impl.verifyModuleMapping),
     code_generation: withWorkspaceFallback("code_generation", impl.verifyCodeGenerationPlan),
     repo_write: withWorkspaceFallback("repo_write", impl.verifyRepoWrite),
-    code_review: trivialFor("code_review"),
+    code_review: impl.verifyCodeReviewResult ? direct(impl.verifyCodeReviewResult) : trivialFor("code_review"),
     verification: direct(impl.verifyVerification),
     pull_request: trivialFor("pull_request"),
   };

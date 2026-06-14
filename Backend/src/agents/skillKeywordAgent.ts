@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callJsonLlmWithSchema } from "../services/llmClient.js";
+import { callJsonLlmWithSchema, getLlmUsageFromError } from "../services/llmClient.js";
 import { recordMetric } from "../services/metricsService.js";
 import type { SkillManifest } from "../skills/skillTypes.js";
 
@@ -78,7 +78,18 @@ export async function generateSkillKeywords(
     });
 
     return { keywords: result.content.keywords.slice(0, 20), source: "llm" };
-  } catch {
+  } catch (error) {
+    const usage = getLlmUsageFromError(error);
+    if (usage) {
+      recordMetric({
+        agent: "Skill Keyword Agent",
+        calls: 1,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        latencyMs: usage.latencyMs,
+        estimatedCost: 0,
+      });
+    }
     return { keywords: deterministicKeywords(input), source: "fallback" };
   }
 }

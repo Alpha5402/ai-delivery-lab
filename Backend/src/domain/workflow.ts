@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { RecalledRequirementCase } from "./workspace.js";
 
 export const stepStatuses = ["idle", "running", "waiting-human", "success", "failed"] as const;
 export const workflowStepIds = [
@@ -62,8 +63,8 @@ export const verificationStatuses = [
 ] as const;
 
 // TODO(PR3): stepOrder / stepLabels / stepAgents 应从 defaultWorkflowTemplate 派生，
-// 消除双写。repo_write 保留为 legacy step id，但不再作为新 workflow 的顶级阶段。
-export const stepOrder = workflowStepIds.filter((id) => id !== "repo_write");
+// 消除双写。module_mapping / repo_write 保留为 legacy step id，但不再作为新 workflow 的顶级阶段。
+export const stepOrder = workflowStepIds.filter((id) => id !== "module_mapping" && id !== "repo_write");
 
 export const stepLabels: Record<WorkflowStepId, string> = {
   requirement_intake: "接收需求",
@@ -146,7 +147,17 @@ export const solutionDslSchema = z.object({
   scope: z.enum(["frontend", "backend", "fullstack"]),
   userStory: z.string().min(1),
   acceptanceCriteria: z.array(z.string().min(1)),
-  dataContract: z.record(z.unknown()),
+  dataContract: z.object({
+    affectedSurfaces: z.array(z.string().min(1)).default([]),
+    inputs: z.array(z.string().min(1)).default([]),
+    outputs: z.array(z.string().min(1)).default([]),
+    stateChanges: z.array(z.string().min(1)).default([]),
+    apiContract: z.array(z.string().min(1)).default([]),
+    constraints: z.array(z.string().min(1)).default([]),
+    assumptions: z.array(z.string().min(1)).default([]),
+    outOfScope: z.array(z.string().min(1)).default([]),
+    verificationHints: z.array(z.string().min(1)).default([]),
+  }).default({}),
 });
 
 export const moduleMappingSchema = z.object({
@@ -162,17 +173,25 @@ export const moduleMappingSchema = z.object({
 });
 
 /** LLM 面向的代码生成计划 schema — content 限制 200 字符，仅用于展示片段。 */
+const codeGenerationTaskSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  files: z.array(z.string().min(1)),
+  testRequired: z.boolean(),
+  /** 指向 solution_design.acceptanceCriteria 的 1-based 编号或稳定短 id */
+  acceptanceCriteriaRefs: z.array(z.string().min(1)).default([]),
+  /** 对目标文件的预期改动，供 writer 和 code review 使用 */
+  expectedChange: z.string().min(1).optional(),
+  /** 需要测试时，描述测试要证明什么；不需要测试时说明原因 */
+  testIntent: z.string().min(1).optional(),
+  /** testRequired=true 时必须填写：本次生成代码阶段要一并创建/修改的测试文件 */
+  testFiles: z.array(z.string().min(1)).optional(),
+  coverLayer: z.enum(["data", "api", "ui", "state", "routing", "style", "auth", "test"]).optional(),
+});
+
 export const llmCodeGenerationPlanSchema = z.object({
   strategy: z.string().min(1),
-  tasks: z.array(z.object({
-    id: z.string().min(1),
-    title: z.string().min(1),
-    files: z.array(z.string().min(1)),
-    testRequired: z.boolean(),
-    /** testRequired=true 时必须填写：本次生成代码阶段要一并创建/修改的测试文件 */
-    testFiles: z.array(z.string().min(1)).optional(),
-    coverLayer: z.enum(["data", "api", "ui"]).optional(),
-  })),
+  tasks: z.array(codeGenerationTaskSchema),
   patches: z.array(z.object({
     path: z.string().min(1),
     changeType: z.enum(["created", "modified"]),
@@ -183,15 +202,7 @@ export const llmCodeGenerationPlanSchema = z.object({
 /** Golden-path 确定性补丁 schema — content 无长度限制，承载完整文件内容。 */
 export const deterministicCodeGenerationPlanSchema = z.object({
   strategy: z.string().min(1),
-  tasks: z.array(z.object({
-    id: z.string().min(1),
-    title: z.string().min(1),
-    files: z.array(z.string().min(1)),
-    testRequired: z.boolean(),
-    /** testRequired=true 时必须填写：本次生成代码阶段要一并创建/修改的测试文件 */
-    testFiles: z.array(z.string().min(1)).optional(),
-    coverLayer: z.enum(["data", "api", "ui"]).optional(),
-  })),
+  tasks: z.array(codeGenerationTaskSchema),
   patches: z.array(z.object({
     path: z.string().min(1),
     changeType: z.enum(["created", "modified"]),
@@ -247,6 +258,11 @@ export const verificationCommandResultSchema = z.object({
   status: z.enum(verificationStatuses),
   stdoutPreview: z.string().default(""),
   stderrPreview: z.string().default(""),
+  warningKind: z.enum(["bundle_size", "deprecation", "performance", "unknown"]).optional(),
+  warningSummary: z.string().optional(),
+  failureKind: z.enum(["missing_dependency", "missing_script", "runtime_environment", "command_failed", "unknown"]).optional(),
+  failureSummary: z.string().optional(),
+  suggestedAction: z.string().optional(),
 });
 
 export const verificationResultSchema = z.object({
@@ -343,6 +359,7 @@ export const updateStepSchema = z.object({
 
 export const replayWorkflowSchema = z.object({
   stepId: workflowStepIdSchema,
+  codeReviewContext: z.enum(["default", "from-code-review", "omit"]).optional(),
 });
 
 export const createInterventionSchema = z.object({
@@ -466,6 +483,30 @@ export type StepRunSnapshot = {
   reason: "replay" | "regenerate";
 };
 
+export type WorkflowExecutionNode = {
+  id: string;
+  stepId: WorkflowStepId;
+  status: StepStatus;
+  output?: unknown;
+  input?: unknown;
+  logs: string[];
+  interventions?: InterventionMessage[];
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt: string;
+  reason: "initial" | "continue" | "replay" | "regenerate" | "restore" | "review-retry";
+  parentNodeId?: string;
+  childNodeIds: string[];
+  invalidated?: boolean;
+};
+
+export type WorkflowExecutionTree = {
+  rootNodeId: string;
+  activeNodeId: string;
+  nodes: Record<string, WorkflowExecutionNode>;
+  stepActiveNodeIds: Partial<Record<WorkflowStepId, string>>;
+};
+
 export type StepRun<TOutput = unknown> = {
   id: WorkflowStepId;
   label: string;
@@ -489,6 +530,8 @@ export type StepRun<TOutput = unknown> = {
   qualityGate?: QualityGateResult;
   /** 自动修复尝试次数,防止无限循环 */
   repairAttempts?: number;
+  /** 当前 step 独立累计的 LLM / 工具调用用量；看板另行做全局汇总 */
+  metrics?: AgentMetric[];
 };
 
 export type WorkflowRun = {
@@ -513,6 +556,21 @@ export type WorkflowRun = {
     hitRouteHints?: string[];
     score?: number;
   };
+  /** 用户收藏成功 run 后生成的历史案例 id */
+  caseId?: string;
+  /** 当前 run 是否已被收藏到历史案例库 */
+  caseFavorited?: boolean;
+  /** 新建 run 时召回的相似历史案例（轻量摘要） */
+  recalledCases?: RecalledRequirementCase[];
+  /** 生成方案后由用户确认哪些历史案例可进入代码生成上下文 */
+  recalledCaseSelection?: {
+    status: "pending" | "confirmed" | "skipped";
+    defaultSelectedCaseIds: string[];
+    selectedCaseIds: string[];
+    confirmedAt?: string;
+  };
+  /** run-level 执行树，用于分支追溯与节点级回滚 */
+  executionTree?: WorkflowExecutionTree;
 };
 
 export type RepositorySnapshot = {

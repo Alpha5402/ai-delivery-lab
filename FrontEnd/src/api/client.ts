@@ -1,7 +1,7 @@
 import type { AgentMetric } from "../features/observability/types";
 import type { RepositorySnapshot } from "../features/repository/types";
-import type { RequirementDraft, StepRunSnapshot, WorkflowRun, WorkflowStepId } from "../features/workflow/types";
-import type { ProjectWorkspace, QuickProjectDraft, WorkspaceContext, WorkspaceSummary } from "../features/workspace/types";
+import type { RequirementDraft, StepRunSnapshot, WorkflowExecutionTree, WorkflowRun, WorkflowStepId } from "../features/workflow/types";
+import type { ProjectWorkspace, QuickProjectDraft, RequirementCase, WorkspaceContext, WorkspaceSummary } from "../features/workspace/types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
@@ -43,6 +43,12 @@ export function deleteWorkflowRun(runId: string) {
   });
 }
 
+export function favoriteWorkflowRunCase(runId: string) {
+  return request<{ run: WorkflowRun; case: RequirementCase }>(`/workflows/${runId}/favorite-case`, {
+    method: "POST",
+  });
+}
+
 export type WorkflowStepRunOptions = {
   pullRequest?: {
     branch?: string;
@@ -63,6 +69,13 @@ export function confirmWorkflowStep(runId: string, stepId: WorkflowStepId) {
   });
 }
 
+export function confirmRecalledCases(runId: string, selectedCaseIds: string[]) {
+  return request<WorkflowRun>(`/workflows/${runId}/recalled-cases/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ selectedCaseIds }),
+  });
+}
+
 export function createStepIntervention(runId: string, stepId: WorkflowStepId, message: string) {
   return request<WorkflowRun>(`/workflows/${runId}/steps/${stepId}/interventions`, {
     method: "POST",
@@ -77,10 +90,14 @@ export function updateWorkflowStep(runId: string, stepId: WorkflowStepId, output
   });
 }
 
-export function replayWorkflowFrom(runId: string, stepId: WorkflowStepId) {
+export function replayWorkflowFrom(
+  runId: string,
+  stepId: WorkflowStepId,
+  options?: { codeReviewContext?: "default" | "from-code-review" | "omit" },
+) {
   return request<WorkflowRun>(`/workflows/${runId}/replay`, {
     method: "POST",
-    body: JSON.stringify({ stepId }),
+    body: JSON.stringify({ stepId, ...options }),
   });
 }
 
@@ -88,6 +105,22 @@ export function replayWorkflowFrom(runId: string, stepId: WorkflowStepId) {
 
 export function getStepHistory(runId: string, stepId: WorkflowStepId) {
   return request<StepRunSnapshot[]>(`/workflows/${runId}/steps/${stepId}/history`);
+}
+
+export function getWorkflowExecutionTree(runId: string) {
+  return request<WorkflowExecutionTree>(`/workflows/${runId}/execution-tree`);
+}
+
+export function restoreExecutionTreeNode(runId: string, nodeId: string) {
+  return request<WorkflowRun>(`/workflows/${runId}/execution-tree/nodes/${nodeId}/restore`, {
+    method: "POST",
+  });
+}
+
+export function deleteExecutionTreeNode(runId: string, nodeId: string) {
+  return request<WorkflowRun>(`/workflows/${runId}/execution-tree/nodes/${nodeId}`, {
+    method: "DELETE",
+  });
 }
 
 export function restoreStepSnapshot(
@@ -106,6 +139,13 @@ export function restoreStepSnapshot(
 
 export type WorkflowStepExecutionMode = "automatic" | "manual-confirmation";
 
+export type CustomVerificationCommand = {
+  id: string;
+  name: string;
+  command: string;
+  enabled: boolean;
+};
+
 export type WorkflowSettings = {
   stepExecutionModes: Record<WorkflowStepId, WorkflowStepExecutionMode>;
   git: {
@@ -113,17 +153,20 @@ export type WorkflowSettings = {
     userEmail?: string;
     githubTokenConfigured: boolean;
     githubTokenSource: "settings" | "env" | "none";
+    githubTokenMasked: string;
     githubOwner?: string;
     githubRepo?: string;
     githubBaseBranch: string;
     githubRemote: string;
   };
   enabledOptionalSteps: { code_review: boolean };
+  customVerificationCommands: CustomVerificationCommand[];
 };
 
 export type WorkflowSettingsPatch = {
   stepExecutionModes?: Record<WorkflowStepId, WorkflowStepExecutionMode>;
   enabledOptionalSteps?: { code_review?: boolean };
+  customVerificationCommands?: CustomVerificationCommand[];
   git?: {
     userName?: string;
     userEmail?: string;
@@ -142,6 +185,112 @@ export function fetchWorkflowSettings() {
 
 export function updateWorkflowSettings(patch: WorkflowSettingsPatch) {
   return request<WorkflowSettings>("/workflows/settings", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+// ---- Public LLM Models -----------------------------------------------------
+
+export type LlmModel = {
+  id: string;
+  displayName: string;
+  baseUrl: string;
+  modelName?: string;
+  apiKeyConfigured: boolean;
+  apiKeySource: "settings" | "env" | "none";
+  apiKeyMasked: string;
+  isDefault: boolean;
+  readOnly?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type LlmModelInput = {
+  id?: string;
+  displayName: string;
+  baseUrl: string;
+  modelName: string;
+  apiKey?: string;
+  isDefault?: boolean;
+};
+
+export type LlmModelPatch = Partial<Omit<LlmModelInput, "id">> & {
+  clearApiKey?: boolean;
+};
+
+export function listLlmModels() {
+  return request<LlmModel[]>("/llm/models");
+}
+
+export function createLlmModel(input: LlmModelInput) {
+  return request<LlmModel>("/llm/models", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateLlmModel(modelId: string, patch: LlmModelPatch) {
+  return request<LlmModel>(`/llm/models/${modelId}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteLlmModel(modelId: string) {
+  return request<void>(`/llm/models/${modelId}`, { method: "DELETE" });
+}
+
+export function setDefaultLlmModel(modelId: string) {
+  return request<LlmModel>(`/llm/models/${modelId}/default`, { method: "POST" });
+}
+
+// ---- Project Settings ------------------------------------------------------
+
+export type VerificationCommandSetting = {
+  id: string;
+  name: string;
+  command: string;
+  enabled: boolean;
+};
+
+export type ProjectSkillSetting = {
+  id: string;
+  baseSkillId?: string;
+  enabled: boolean;
+  name?: string;
+  description?: string;
+  version?: string;
+  requirementPatterns?: string[];
+  scopes?: string[];
+  match?: {
+    keywords?: string[];
+    fileGlobs?: string[];
+    routeHints?: string[];
+  };
+  steps?: Record<string, unknown>;
+};
+
+export type ProjectSettings = {
+  projectId: string;
+  verificationCommands: VerificationCommandSetting[];
+  stepExecutionModes: Partial<Record<WorkflowStepId, WorkflowStepExecutionMode>>;
+  selectedLlmModelId?: string;
+  excludedPublicSkillIds: string[];
+  projectSkills: ProjectSkillSetting[];
+  updatedAt: string;
+};
+
+export type ProjectSettingsPatch = Partial<Pick<ProjectSettings, "verificationCommands" | "stepExecutionModes" | "excludedPublicSkillIds" | "projectSkills">> & {
+  selectedLlmModelId?: string | null;
+};
+
+export function fetchProjectSettings(projectId: string) {
+  return request<ProjectSettings>(`/workspaces/${projectId}/settings`);
+}
+
+export function updateProjectSettings(projectId: string, patch: ProjectSettingsPatch) {
+  return request<ProjectSettings>(`/workspaces/${projectId}/settings`, {
     method: "PATCH",
     body: JSON.stringify(patch),
   });
@@ -172,6 +321,7 @@ export function subscribeWorkflowRun(
     onStepEvent?: (event: Extract<WorkflowStreamEvent, { type: "step" }>) => void;
     onSettingsChanged?: (settings: WorkflowSettings) => void;
     onMetrics?: (metrics: AgentMetric[]) => void;
+    onOpen?: () => void;
     onError?: (error: unknown) => void;
     onReconnect?: (attempt: number) => void;
   },
@@ -190,11 +340,29 @@ export function subscribeWorkflowRun(
     if (disposed) return;
 
     source = new EventSource(url);
+    if (import.meta.env.DEV) {
+      console.debug("[workflow-sse]", "connect", { runId, url });
+    }
+
+    source.onopen = () => {
+      retryCount = 0;
+      if (import.meta.env.DEV) {
+        console.debug("[workflow-sse]", "open", { runId });
+      }
+      handlers.onOpen?.();
+    };
 
     source.addEventListener("update", (raw) => {
       retryCount = 0; // 成功收到消息，重置重试计数
       try {
         const payload = JSON.parse((raw as MessageEvent).data) as { run: WorkflowRun };
+        if (import.meta.env.DEV) {
+          console.debug("[workflow-sse]", "update", {
+            runId,
+            activeStepId: payload.run.activeStepId,
+            updatedAt: payload.run.updatedAt,
+          });
+        }
         handlers.onUpdate?.(payload.run);
       } catch (error) {
         handlers.onError?.(error);
@@ -205,6 +373,13 @@ export function subscribeWorkflowRun(
       retryCount = 0;
       try {
         const payload = JSON.parse((raw as MessageEvent).data) as Extract<WorkflowStreamEvent, { type: "step" }>;
+        if (import.meta.env.DEV) {
+          console.debug("[workflow-sse]", "step", {
+            runId,
+            stepId: payload.stepId,
+            phase: payload.phase,
+          });
+        }
         handlers.onStepEvent?.(payload);
       } catch (error) {
         handlers.onError?.(error);
@@ -225,6 +400,9 @@ export function subscribeWorkflowRun(
       retryCount = 0;
       try {
         const payload = JSON.parse((raw as MessageEvent).data) as { metrics: AgentMetric[] };
+        if (import.meta.env.DEV) {
+          console.debug("[workflow-sse]", "metrics", { runId, count: payload.metrics.length });
+        }
         handlers.onMetrics?.(payload.metrics);
       } catch (error) {
         handlers.onError?.(error);
@@ -249,6 +427,9 @@ export function subscribeWorkflowRun(
       const jitter = Math.random() * 500;
       const delay = exponentialDelay + jitter;
 
+      if (import.meta.env.DEV) {
+        console.debug("[workflow-sse]", "reconnect", { runId, attempt: retryCount, delay });
+      }
       handlers.onReconnect?.(retryCount);
       retryTimer = setTimeout(connect, delay);
     };
@@ -277,6 +458,51 @@ export function getAgentMetrics() {
   return request<AgentMetric[]>("/metrics");
 }
 
+export type DailyMetric = {
+  date: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  latencyMs: number;
+  estimatedCost: number;
+};
+
+export type LlmDashboardSettings = {
+  baseUrl: string;
+  modelName?: string;
+  apiKeyConfigured: boolean;
+  apiKeySource: "settings" | "env" | "none";
+  apiKeyMasked: string;
+  overrides: {
+    baseUrl: boolean;
+    modelName: boolean;
+    apiKey: boolean;
+  };
+};
+
+export type LlmDashboardSettingsPatch = {
+  baseUrl?: string;
+  modelName?: string;
+  apiKey?: string;
+  clearApiKey?: boolean;
+};
+
+export function getDailyMetrics() {
+  return request<DailyMetric[]>("/metrics/daily");
+}
+
+export function getLlmDashboardSettings() {
+  return request<LlmDashboardSettings>("/metrics/llm-settings");
+}
+
+export function updateLlmDashboardSettings(patch: LlmDashboardSettingsPatch) {
+  return request<LlmDashboardSettings>("/metrics/llm-settings", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
 export function importWorkspace(repoUrl: string) {
   return request<WorkspaceContext>("/workspaces/import", {
     method: "POST",
@@ -294,6 +520,20 @@ export function listRecentProjects() {
 
 export function getProjectWorkspace(projectId: string) {
   return request<ProjectWorkspace>(`/workspaces/${projectId}`);
+}
+
+export function listRequirementCases(projectId: string) {
+  return request<RequirementCase[]>(`/workspaces/${projectId}/cases`);
+}
+
+export function getRequirementCase(projectId: string, caseId: string) {
+  return request<RequirementCase>(`/workspaces/${projectId}/cases/${caseId}`);
+}
+
+export function deleteRequirementCase(projectId: string, caseId: string) {
+  return request<void>(`/workspaces/${projectId}/cases/${caseId}`, {
+    method: "DELETE",
+  });
 }
 
 export function deleteProjectWorkspace(projectId: string, deleteDirectory = false) {
@@ -369,10 +609,10 @@ export function resetBuiltinSkill(skillId: string) {
   return request<SkillManifest>(`/skills/${skillId}/reset`, { method: "POST" });
 }
 
-// ---- Code Review Repair -------------------------------------------------------
+// ---- Code Review Retry --------------------------------------------------------
 
-export function repairCodeReview(runId: string) {
-  return request<WorkflowRun>(`/workflows/${runId}/steps/code_review/repair`, { method: "POST" });
+export function retryCodeGenerationFromCodeReview(runId: string) {
+  return request<WorkflowRun>(`/workflows/${runId}/steps/code_review/retry-code-generation`, { method: "POST" });
 }
 
 // ---- Workflow Templates -------------------------------------------------------

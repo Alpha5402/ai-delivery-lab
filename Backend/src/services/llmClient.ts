@@ -1,4 +1,5 @@
-import { env } from "../config/env.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { getLlmRuntimeSettings } from "./llmSettingsService.js";
 import { z } from "zod";
 
 export type ChatMessage = {
@@ -34,6 +35,32 @@ export type LlmHarnessResult<TContent> = LlmJsonResult<TContent> & {
   validationErrors: string[];
 };
 
+export type LlmUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+};
+
+export class LlmUsageError extends Error {
+  usage: LlmUsage;
+
+  constructor(message: string, usage: LlmUsage, options?: { cause?: unknown }) {
+    super(message);
+    this.name = "LlmUsageError";
+    this.usage = usage;
+    if (options?.cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
+export function getLlmUsageFromError(error: unknown): LlmUsage | null {
+  if (error instanceof LlmUsageError) {
+    return error.usage;
+  }
+  return null;
+}
+
 /**
  * 可注入的 LLM transport，用于测试时替换真实 HTTP 调用。
  * 生产代码不注入，自动走 Volcengine Ark fetch 路径。
@@ -47,10 +74,15 @@ export type LlmTransport = (messages: ChatMessage[]) => Promise<{
 }>;
 
 let _transport: LlmTransport | null = null;
+const llmProjectContext = new AsyncLocalStorage<{ projectId?: string }>();
 
 /** 注入自定义 transport。传 null 恢复默认 HTTP transport。 */
 export function setLlmTransport(transport: LlmTransport | null): void {
   _transport = transport;
+}
+
+export function withLlmProjectContext<T>(projectId: string | undefined, fn: () => Promise<T>) {
+  return llmProjectContext.run({ projectId }, fn);
 }
 
 export class LlmNotConfiguredError extends Error {
@@ -98,7 +130,22 @@ export async function callJsonLlmWithSchema<TContent>(
   let lastRawContent = "";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const completion = await requestChatCompletion(retryMessages);
+    let completion: Awaited<ReturnType<typeof requestChatCompletion>>;
+    try {
+      completion = await requestChatCompletion(retryMessages);
+    } catch (error) {
+      const failedUsage = getLlmUsageFromError(error);
+      throw new LlmUsageError(
+        error instanceof Error ? error.message : `${options.label ?? "LLM"} request failed`,
+        {
+          inputTokens: totalInputTokens + (failedUsage?.inputTokens ?? 0),
+          outputTokens: totalOutputTokens + (failedUsage?.outputTokens ?? 0),
+          latencyMs: totalLatencyMs + (failedUsage?.latencyMs ?? 0),
+        },
+        { cause: error },
+      );
+    }
+
     totalInputTokens += completion.inputTokens;
     totalOutputTokens += completion.outputTokens;
     totalLatencyMs += completion.latencyMs;
@@ -134,12 +181,17 @@ export async function callJsonLlmWithSchema<TContent>(
     retryMessages = buildHarnessRetryMessages(messages, completion.rawContent, validationError, options.label);
   }
 
-  throw new Error(
+  throw new LlmUsageError(
     [
       `${options.label ?? "LLM"} returned invalid JSON after ${maxAttempts} attempt(s).`,
       ...validationErrors.map((error, index) => `Attempt ${index + 1}: ${error}`),
       `Last raw response: ${lastRawContent}`,
     ].join("\n"),
+    {
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      latencyMs: totalLatencyMs,
+    },
   );
 }
 
@@ -153,36 +205,40 @@ const LLM_RETRY_BASE_MS = 2_000;
 async function requestChatCompletion(messages: ChatMessage[]) {
   if (_transport) return _transport(messages);
 
-  if (!env.ARK_API_KEY || !env.ARK_MODEL) {
+  const llmSettings = getLlmRuntimeSettings(llmProjectContext.getStore()?.projectId);
+  if (!llmSettings.apiKey || !llmSettings.modelName) {
     throw new LlmNotConfiguredError();
   }
 
   let lastError: Error | undefined;
+  let totalLatencyMs = 0;
 
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt += 1) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
 
     const startedAt = performance.now();
+    let latencyRecorded = false;
     try {
-      const response = await fetch(`${env.ARK_BASE_URL}/chat/completions`, {
+      const response = await fetch(`${llmSettings.baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${env.ARK_API_KEY}`,
+          Authorization: `Bearer ${llmSettings.apiKey}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: env.ARK_MODEL,
+          model: llmSettings.modelName,
           messages,
           temperature: 0.2,
         }),
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
-      const latencyMs = Math.round(performance.now() - startedAt);
-
       if (!response.ok) {
         const errorBody = await response.text().catch(() => "");
+        const latencyMs = Math.round(performance.now() - startedAt);
+        totalLatencyMs += latencyMs;
+        latencyRecorded = true;
+        clearTimeout(timeoutId);
         const error = new Error(`LLM request failed: ${response.status} ${errorBody}`);
         // 仅对 5xx / 429 重试
         if (response.status >= 500 || response.status === 429) {
@@ -196,6 +252,10 @@ async function requestChatCompletion(messages: ChatMessage[]) {
       const payload = await response.json() as ChatCompletionResponse;
       const rawContent = payload.choices?.[0]?.message?.content;
       const finishReason = payload.choices?.[0]?.finish_reason;
+      const latencyMs = Math.round(performance.now() - startedAt);
+      totalLatencyMs += latencyMs;
+      latencyRecorded = true;
+      clearTimeout(timeoutId);
 
       if (!rawContent) {
         throw new Error("LLM response did not include message content");
@@ -205,11 +265,15 @@ async function requestChatCompletion(messages: ChatMessage[]) {
         rawContent,
         inputTokens: payload.usage?.prompt_tokens ?? 0,
         outputTokens: payload.usage?.completion_tokens ?? 0,
-        latencyMs,
+        latencyMs: totalLatencyMs,
         finishReason,
       };
     } catch (error) {
       clearTimeout(timeoutId);
+      if (!latencyRecorded) {
+        const failedLatencyMs = Math.round(performance.now() - startedAt);
+        totalLatencyMs += failedLatencyMs;
+      }
       const isAbort = error instanceof Error && error.name === "AbortError";
       const isNetwork = error instanceof TypeError; // fetch network error
       if (isAbort || isNetwork) {
@@ -223,11 +287,19 @@ async function requestChatCompletion(messages: ChatMessage[]) {
           continue;
         }
       }
-      throw lastError ?? error;
+      throw new LlmUsageError(
+        lastError?.message ?? (error instanceof Error ? error.message : "LLM request failed"),
+        { inputTokens: 0, outputTokens: 0, latencyMs: totalLatencyMs },
+        { cause: lastError ?? error },
+      );
     }
   }
 
-  throw lastError ?? new Error("LLM request failed after all retries");
+  throw new LlmUsageError(
+    lastError?.message ?? "LLM request failed after all retries",
+    { inputTokens: 0, outputTokens: 0, latencyMs: totalLatencyMs },
+    { cause: lastError },
+  );
 }
 
 function sleep(ms: number) {

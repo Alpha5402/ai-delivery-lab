@@ -52,6 +52,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               项目
             </NavLink>
             <NavLink
+              to="/board"
+              className={({ isActive }) =>
+                isActive ? "app-shell__link app-shell__link--active" : "app-shell__link"
+              }
+            >
+              看板
+            </NavLink>
+            <NavLink
               to="/settings"
               className={({ isActive }) =>
                 isActive ? "app-shell__link app-shell__link--active" : "app-shell__link"

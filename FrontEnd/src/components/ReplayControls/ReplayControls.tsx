@@ -28,8 +28,8 @@ export function ReplayControls({ step, onReplay, onRunNext }: { step: StepRun; o
           <Text strong>{formatStepLabel(step.label)} 可确认后继续，也可以从这里重放后续阶段。</Text>
         </div>
         <Space>
-          <Button onClick={onReplay}>从此重放</Button>
-          <Button type="primary" onClick={onRunNext}>确认并继续</Button>
+          <Button className="settings-page__skill-button" onClick={onReplay}>从此重放</Button>
+          <Button className="settings-page__skill-button settings-page__skill-button--primary" onClick={onRunNext}>确认并继续</Button>
         </Space>
       </div>
     </Card>

@@ -10,7 +10,9 @@ import {
   listParsedWorkspaces,
   openParsedWorkspace,
 } from "../services/workspaceService.js";
+import { getProjectSettings, projectSettingsPatchSchema, updateProjectSettings } from "../services/projectSettingsService.js";
 import { evictWorkflowRunsForProject } from "../services/workflowService.js";
+import { deleteRequirementCase, getRequirementCase, listRequirementCases } from "../services/requirementCaseService.js";
 
 export const workspaceRoutes = Router();
 
@@ -31,6 +33,41 @@ workspaceRoutes.get("/current", (_req, res) => {
   }
 
   res.json(workspace);
+});
+
+workspaceRoutes.get("/:projectId/cases", (req, res) => {
+  res.json(listRequirementCases(req.params.projectId));
+});
+
+workspaceRoutes.get("/:projectId/settings", (req, res) => {
+  res.json(getProjectSettings(req.params.projectId));
+});
+
+workspaceRoutes.patch("/:projectId/settings", (req, res) => {
+  const parsed = projectSettingsPatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid project settings payload", issues: parsed.error.issues });
+    return;
+  }
+  res.json(updateProjectSettings(req.params.projectId, parsed.data));
+});
+
+workspaceRoutes.get("/:projectId/cases/:caseId", (req, res) => {
+  const item = getRequirementCase(req.params.projectId, req.params.caseId);
+  if (!item) {
+    res.status(404).json({ message: "Requirement case not found" });
+    return;
+  }
+  res.json(item);
+});
+
+workspaceRoutes.delete("/:projectId/cases/:caseId", (req, res) => {
+  const deleted = deleteRequirementCase(req.params.projectId, req.params.caseId);
+  if (deleted === 0) {
+    res.status(404).json({ message: "Requirement case not found" });
+    return;
+  }
+  res.status(204).send();
 });
 
 workspaceRoutes.get("/:projectId", (req, res) => {

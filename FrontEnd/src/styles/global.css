@@ -30,6 +30,90 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
+.ant-btn.settings-page__skill-button,
+.ant-btn:not(.ant-btn-link):not(.ant-btn-text) {
+  align-items: center;
+  background: #fff;
+  border-color: #d0d5dd;
+  border-radius: 6px;
+  color: #475467;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 4px;
+  height: 26px;
+  justify-content: center;
+  line-height: 18px;
+  padding: 2px 10px;
+}
+
+.ant-btn.settings-page__skill-button:hover,
+.ant-btn.settings-page__skill-button:focus-visible,
+.ant-btn:not(.ant-btn-link):not(.ant-btn-text):not(:disabled):hover,
+.ant-btn:not(.ant-btn-link):not(.ant-btn-text):not(:disabled):focus-visible {
+  background: #f8fafc;
+  border-color: #98a2b3;
+  color: #344054;
+}
+
+.ant-btn.settings-page__skill-button--primary,
+.ant-btn.settings-page__skill-button--primary:not(.ant-btn-link):not(.ant-btn-text) {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.ant-btn.settings-page__skill-button.settings-page__skill-button--primary:not(:disabled):hover,
+.ant-btn.settings-page__skill-button.settings-page__skill-button--primary:not(:disabled):focus-visible,
+.ant-btn.settings-page__skill-button--primary:not(.ant-btn-link):not(.ant-btn-text):not(:disabled):hover,
+.ant-btn.settings-page__skill-button--primary:not(.ant-btn-link):not(.ant-btn-text):not(:disabled):focus-visible {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1e40af;
+}
+
+.ant-btn.settings-page__skill-button.settings-page__skill-button--primary:not(:disabled):active,
+.ant-btn.settings-page__skill-button--primary:not(.ant-btn-link):not(.ant-btn-text):not(:disabled):active {
+  background: #bfdbfe;
+  border-color: #60a5fa;
+  color: #1e3a8a;
+}
+
+.ant-btn.settings-page__skill-button--danger,
+.ant-btn.ant-btn-dangerous,
+.ant-btn.settings-page__skill-button--danger:not(.ant-btn-link):not(.ant-btn-text) {
+  background: #fff;
+  border-color: #fecaca;
+  color: #b42318;
+}
+
+.ant-btn.settings-page__skill-button.settings-page__skill-button--danger:not(:disabled):hover,
+.ant-btn.settings-page__skill-button.settings-page__skill-button--danger:not(:disabled):focus-visible,
+.ant-btn.settings-page__skill-button--danger:not(.ant-btn-link):not(.ant-btn-text):not(:disabled):hover,
+.ant-btn.settings-page__skill-button--danger:not(.ant-btn-link):not(.ant-btn-text):not(:disabled):focus-visible,
+.ant-btn.ant-btn-dangerous:not(:disabled):hover,
+.ant-btn.ant-btn-dangerous:not(:disabled):focus-visible {
+  background: #fef3f2;
+  border-color: #fda29b;
+  color: #912018;
+}
+
+.ant-btn.settings-page__skill-button.settings-page__skill-button--danger:not(:disabled):active,
+.ant-btn.settings-page__skill-button--danger:not(.ant-btn-link):not(.ant-btn-text):not(:disabled):active,
+.ant-btn.ant-btn-dangerous:not(:disabled):active {
+  background: #fee4e2;
+  border-color: #f97066;
+  color: #7a271a;
+}
+
+.ant-btn.settings-page__token-button:disabled,
+.ant-btn.settings-page__skill-button:disabled,
+.ant-btn:disabled {
+  background: #f9fafb;
+  border-color: #e5e7eb;
+  color: #98a2b3;
+}
+
 .workbench {
   display: grid;
   gap: 16px;

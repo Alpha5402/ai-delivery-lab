@@ -1,0 +1,108 @@
+.board-page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding-bottom: 48px;
+  width: 100%;
+}
+
+.board-page__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.board-page__back {
+  color: #6b7280;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.board-page__back:hover {
+  color: #2563eb;
+}
+
+.board-page__intro {
+  color: #4b5563;
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+.board-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.board-config-card,
+.board-chart-card {
+  border: 1px solid #e5e7eb;
+  box-shadow: none;
+}
+
+.board-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.board-card-title > span {
+  color: #111827;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.board-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+.board-field > span {
+  color: #475467;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.board-config-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.board-chart {
+  height: 320px;
+  min-height: 320px;
+  padding: 6px 2px 0;
+  border-radius: 8px;
+  width: 100%;
+}
+
+.board-empty {
+  min-height: 320px;
+  display: grid;
+  place-items: center;
+  color: #667085;
+  border: 1px dashed #d0d5dd;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+@media (max-width: 980px) {
+  .board-config-card__footer,
+  .board-page__header,
+  .board-card-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .board-chart {
+    height: 300px;
+    min-height: 300px;
+  }
+}

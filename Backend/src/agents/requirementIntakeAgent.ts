@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callJsonLlmWithSchema } from "../services/llmClient.js";
+import { callJsonLlmWithSchema, getLlmUsageFromError } from "../services/llmClient.js";
 import { recordMetric } from "../services/metricsService.js";
 
 const requirementTitleSchema = z.object({
@@ -40,7 +40,18 @@ export async function generateRequirementTitle(rawText: string): Promise<string>
     });
 
     return normalizeRequirementTitle(result.content.title, rawText);
-  } catch {
+  } catch (error) {
+    const usage = getLlmUsageFromError(error);
+    if (usage) {
+      recordMetric({
+        agent: "接收需求",
+        calls: 1,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        latencyMs: usage.latencyMs,
+        estimatedCost: 0,
+      });
+    }
     return normalizeRequirementTitle("", rawText);
   }
 }

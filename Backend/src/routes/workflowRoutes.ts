@@ -9,12 +9,17 @@ import {
 } from "../domain/workflow.js";
 import {
   addInterventionAndRegenerate,
+  confirmRecalledCases,
   confirmStep,
   createWorkflowRun,
+  deleteExecutionTreeNode,
   deleteWorkflowRun,
+  favoriteWorkflowRunCase,
   getStepHistory,
+  getWorkflowExecutionTree,
   getWorkflowRun,
   replayFromStep,
+  restoreExecutionTreeNode,
   restoreStepSnapshot,
   runStep,
   updateStepOutput,
@@ -47,6 +52,10 @@ const runStepOptionsSchema = z.object({
     commitMessage: z.string().optional(),
   }).optional(),
 }).optional();
+
+const confirmRecalledCasesSchema = z.object({
+  selectedCaseIds: z.array(z.string().min(1)).max(3).default([]),
+});
 
 // ---- Settings ----------------------------------------------------------------
 
@@ -105,6 +114,32 @@ workflowRoutes.delete("/:runId", (req, res) => {
   }
 });
 
+workflowRoutes.post("/:runId/favorite-case", async (req, res) => {
+  try {
+    const result = await favoriteWorkflowRunCase(req.params.runId);
+    res.status(201).json({ ...result, run: enrichWithSkill(result.run) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Workflow run cannot be favorited";
+    res.status(message.includes("已完成") ? 409 : 404).json({ message });
+  }
+});
+
+workflowRoutes.post("/:runId/recalled-cases/confirm", async (req, res) => {
+  const parsed = confirmRecalledCasesSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid recalled case selection", issues: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const run = await confirmRecalledCases(req.params.runId, parsed.data.selectedCaseIds);
+    res.json(enrichWithSkill(run));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to confirm recalled cases";
+    res.status(message.includes("不存在") || message.includes("not found") ? 404 : 409).json({ message });
+  }
+});
+
 // ---- SSE stream --------------------------------------------------------------
 
 workflowRoutes.get("/:runId/stream", (req, res) => {
@@ -115,15 +150,45 @@ workflowRoutes.get("/:runId/stream", (req, res) => {
   }
 
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
 
+  const streamId = `${req.params.runId}:${Date.now()}`;
+  let closed = false;
+  console.log("[workflow-sse]", JSON.stringify({
+    event: "connect",
+    streamId,
+    runId: req.params.runId,
+    activeStepId: run.activeStepId,
+  }));
+
   const send = (event: string, data: unknown) => {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (closed) return;
+    try {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+      console.log("[workflow-sse]", JSON.stringify({
+        event: "send",
+        streamId,
+        runId: req.params.runId,
+        type: event,
+        stepId: event === "step" && typeof data === "object" && data !== null ? (data as { stepId?: unknown }).stepId : undefined,
+        phase: event === "step" && typeof data === "object" && data !== null ? (data as { phase?: unknown }).phase : undefined,
+      }));
+    } catch (error) {
+      console.error("[workflow-sse]", JSON.stringify({
+        event: "send.failed",
+        streamId,
+        runId: req.params.runId,
+        type: event,
+        message: error instanceof Error ? error.message : "unknown SSE write error",
+      }));
+    }
   };
+
+  res.write("retry: 3000\n\n");
 
   // 先订阅，再发送最新快照——避免订阅与快照之间的丢事件窗口
   const unsubscribe = workflowEventBus.subscribe(req.params.runId, (event) => {
@@ -145,12 +210,28 @@ workflowRoutes.get("/:runId/stream", (req, res) => {
 
   // 心跳，避免代理切断长连接。
   const heartbeat = setInterval(() => {
-    res.write(": ping\n\n");
+    if (closed) return;
+    try {
+      res.write(": ping\n\n");
+    } catch (error) {
+      console.error("[workflow-sse]", JSON.stringify({
+        event: "heartbeat.failed",
+        streamId,
+        runId: req.params.runId,
+        message: error instanceof Error ? error.message : "unknown SSE heartbeat error",
+      }));
+    }
   }, 15000);
 
   req.on("close", () => {
+    closed = true;
     clearInterval(heartbeat);
     unsubscribe();
+    console.log("[workflow-sse]", JSON.stringify({
+      event: "disconnect",
+      streamId,
+      runId: req.params.runId,
+    }));
     res.end();
   });
 });
@@ -189,7 +270,7 @@ workflowRoutes.post("/:runId/steps/:stepId/run", async (req, res) => {
   }
 });
 
-workflowRoutes.post("/:runId/steps/:stepId/confirm", (req, res) => {
+workflowRoutes.post("/:runId/steps/:stepId/confirm", async (req, res) => {
   const parsedStepId = workflowStepIdSchema.safeParse(req.params.stepId);
 
   if (!parsedStepId.success) {
@@ -198,7 +279,7 @@ workflowRoutes.post("/:runId/steps/:stepId/confirm", (req, res) => {
   }
 
   try {
-    res.json(enrichWithSkill(confirmStep(req.params.runId, parsedStepId.data)));
+    res.json(enrichWithSkill(await confirmStep(req.params.runId, parsedStepId.data)));
   } catch (error) {
     res.status(409).json({ message: error instanceof Error ? error.message : "Workflow step confirm failed" });
   }
@@ -220,7 +301,7 @@ workflowRoutes.patch("/:runId/steps/:stepId", (req, res) => {
   }
 });
 
-workflowRoutes.post("/:runId/replay", (req, res) => {
+workflowRoutes.post("/:runId/replay", async (req, res) => {
   const parsed = replayWorkflowSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -229,24 +310,64 @@ workflowRoutes.post("/:runId/replay", (req, res) => {
   }
 
   try {
-    res.json(enrichWithSkill(replayFromStep(req.params.runId, parsed.data.stepId)));
+    console.log("[workflow-replay][route]", JSON.stringify({
+      runId: req.params.runId,
+      stepId: parsed.data.stepId,
+      codeReviewContext: parsed.data.codeReviewContext ?? null,
+    }));
+    res.json(enrichWithSkill(await replayFromStep(req.params.runId, parsed.data.stepId, {
+      codeReviewContext: parsed.data.codeReviewContext,
+    })));
   } catch (error) {
     res.status(404).json({ message: error instanceof Error ? error.message : "Workflow run not found" });
   }
 });
 
-// ---- Code Review Repair -------------------------------------------------------
+// ---- Code Review Retry --------------------------------------------------------
+
+workflowRoutes.post("/:runId/steps/code_review/retry-code-generation", async (req, res) => {
+  try {
+    const { retryCodeGenerationFromCodeReview } = await import("../services/workflowService.js");
+    res.json(enrichWithSkill(await retryCodeGenerationFromCodeReview(req.params.runId)));
+  } catch (error) {
+    res.status(500).json({ message: error instanceof Error ? error.message : "按审查意见重跑生成代码失败" });
+  }
+});
 
 workflowRoutes.post("/:runId/steps/code_review/repair", async (req, res) => {
   try {
-    const { repairCodeReviewAndRerun } = await import("../services/workflowService.js");
-    res.json(enrichWithSkill(await repairCodeReviewAndRerun(req.params.runId)));
+    const { retryCodeGenerationFromCodeReview } = await import("../services/workflowService.js");
+    res.json(enrichWithSkill(await retryCodeGenerationFromCodeReview(req.params.runId)));
   } catch (error) {
-    res.status(500).json({ message: error instanceof Error ? error.message : "修复失败" });
+    res.status(500).json({ message: error instanceof Error ? error.message : "按审查意见重跑生成代码失败" });
   }
 });
 
 // ---- Step history ------------------------------------------------------------
+
+workflowRoutes.get("/:runId/execution-tree", (req, res) => {
+  try {
+    res.json(getWorkflowExecutionTree(req.params.runId));
+  } catch (error) {
+    res.status(404).json({ message: error instanceof Error ? error.message : "Execution tree not found" });
+  }
+});
+
+workflowRoutes.post("/:runId/execution-tree/nodes/:nodeId/restore", async (req, res) => {
+  try {
+    res.json(enrichWithSkill(await restoreExecutionTreeNode(req.params.runId, req.params.nodeId)));
+  } catch (error) {
+    res.status(404).json({ message: error instanceof Error ? error.message : "Execution node restore failed" });
+  }
+});
+
+workflowRoutes.delete("/:runId/execution-tree/nodes/:nodeId", (req, res) => {
+  try {
+    res.json(enrichWithSkill(deleteExecutionTreeNode(req.params.runId, req.params.nodeId)));
+  } catch (error) {
+    res.status(409).json({ message: error instanceof Error ? error.message : "Execution node delete failed" });
+  }
+});
 
 workflowRoutes.get("/:runId/steps/:stepId/history", (req, res) => {
   const parsedStepId = workflowStepIdSchema.safeParse(req.params.stepId);
@@ -262,7 +383,7 @@ workflowRoutes.get("/:runId/steps/:stepId/history", (req, res) => {
   }
 });
 
-workflowRoutes.post("/:runId/steps/:stepId/restore", (req, res) => {
+workflowRoutes.post("/:runId/steps/:stepId/restore", async (req, res) => {
   const parsedStepId = workflowStepIdSchema.safeParse(req.params.stepId);
   if (!parsedStepId.success) {
     res.status(400).json({ message: "Invalid step id" });
@@ -276,7 +397,7 @@ workflowRoutes.post("/:runId/steps/:stepId/restore", (req, res) => {
   }
 
   try {
-    res.json(enrichWithSkill(restoreStepSnapshot(req.params.runId, parsedStepId.data, snapshotId, replayDownstream)));
+    res.json(enrichWithSkill(await restoreStepSnapshot(req.params.runId, parsedStepId.data, snapshotId, replayDownstream)));
   } catch (error) {
     res.status(404).json({ message: error instanceof Error ? error.message : "Restore failed" });
   }

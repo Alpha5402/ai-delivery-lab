@@ -1,16 +1,19 @@
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { exec, execFile } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { WorkspaceContext } from "../domain/workspace.js";
 import { getGitRuntimeSettings } from "../services/workflowSettingsService.js";
+import { getProjectVerificationCommands } from "../services/projectSettingsService.js";
 import type { RuntimeToolCall, RuntimeToolName } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 const maxReadChars = 12_000;
 const maxStreamChars = 4_000;
 const COMMAND_TIMEOUT_MS = 120_000;
+const RUNTIME_SCRIPT_SCAN_IGNORES = new Set([".git", "node_modules", "dist", "build", "coverage", ".next", ".turbo"]);
 
 /** 严禁用 write_file 覆盖的敏感文件名(不带路径前缀的最后一段)。 */
 const PROTECTED_FILENAMES = new Set([
@@ -37,6 +40,23 @@ const COMMAND_WHITELIST: Record<string, { argv: string[]; description: string }>
 };
 
 type RuntimeToolInput = Record<string, unknown>;
+type PackageJson = {
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  jest?: unknown;
+};
+type CommandFailureHint = {
+  failureKind: "missing_dependency" | "missing_script" | "runtime_environment" | "command_failed" | "unknown";
+  failureSummary: string;
+  suggestedAction: string;
+};
+type CommandWarningHint = {
+  warningKind: "bundle_size" | "deprecation" | "performance" | "unknown";
+  warningSummary: string;
+};
 
 function normalizeGitBranchName(input: unknown) {
   const normalized = String(input ?? "")
@@ -91,7 +111,7 @@ async function executeTool(workspace: WorkspaceContext, tool: RuntimeToolName, i
         scripts: workspace.repositoryScan.scripts,
       };
     case "detect_workflow_commands":
-      return detectWorkflowCommands(workspace);
+      return detectWorkflowCommands(workspace, input);
     case "run_command":
       return runWorkspaceCommand(workspace, input);
     case "write_file":
@@ -186,51 +206,157 @@ async function gitStatus(workspace: WorkspaceContext) {
   }
 }
 
-/**
- * 探测工作区有哪些可执行验证命令(typecheck/lint/test/build)。
- * 来源:repositoryScan.scripts 中是否包含对应 npm script。
- */
-function detectWorkflowCommands(workspace: WorkspaceContext) {
-  const scripts = workspace.repositoryScan.scripts ?? {};
-  const scopeOrder = Object.keys(scripts).sort((left, right) => {
-    if (left === "root") return -1;
-    if (right === "root") return 1;
-    if (left === "frontend") return -1;
-    if (right === "frontend") return 1;
-    return left.localeCompare(right);
-  });
+function readLiveWorkspaceScripts(workspace: WorkspaceContext) {
+  if (!workspace.workspaceDir || !existsSync(workspace.workspaceDir)) return null;
 
-  function pick(label: keyof typeof COMMAND_WHITELIST | string, requireScript: string | null) {
-    const spec = (COMMAND_WHITELIST as Record<string, { argv: string[]; description: string }>)[label];
-    if (!spec) return null;
-    const scope = requireScript === null
-      ? "root"
-      : scopeOrder.find((candidateScope) => scripts[candidateScope]?.includes(requireScript));
-    const available = Boolean(scope);
-    const cwd = scope && workspace.workspaceDir
-      ? path.resolve(workspace.workspaceDir, scope === "root" ? "" : scope)
-      : workspace.workspaceDir;
+  const scripts: Record<string, string[]> = {};
+  const visit = (dir: string) => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+
+    if (entries.includes("package.json")) {
+      const relative = path.relative(workspace.workspaceDir!, dir);
+      const scope = relative === "" ? "root" : relative;
+      const pkg = readPackageJsonIfPresent(dir);
+      scripts[scope] = Object.keys(pkg?.scripts ?? {});
+    }
+
+    for (const entry of entries) {
+      if (RUNTIME_SCRIPT_SCAN_IGNORES.has(entry)) continue;
+      const child = path.join(dir, entry);
+      try {
+        if (statSync(child).isDirectory()) visit(child);
+      } catch {
+        // Ignore unreadable paths; stale repositoryScan remains the fallback.
+      }
+    }
+  };
+
+  visit(workspace.workspaceDir);
+  return Object.keys(scripts).length > 0 ? scripts : null;
+}
+
+/**
+ * 探测验证命令。
+ * 自动扫描到的 package.json scripts 只作为 trace 信息；真正执行的门禁来自用户可编辑配置。
+ */
+function detectWorkflowCommands(workspace: WorkspaceContext, input: RuntimeToolInput) {
+  const scripts = readLiveWorkspaceScripts(workspace) ?? workspace.repositoryScan.scripts ?? {};
+  const projectId = typeof input.projectId === "string" ? input.projectId : undefined;
+  const customCommands = getProjectVerificationCommands(projectId).filter((command) => command.enabled);
+
+  return {
+    workspaceDir: workspace.workspaceDir,
+    candidates: customCommands.map((command) => ({
+      label: `custom:${command.id}`,
+      argv: [command.command],
+      command: command.command,
+      description: command.name,
+      scope: "root",
+      cwd: workspace.workspaceDir,
+      available: Boolean(workspace.workspaceDir),
+      reason: workspace.workspaceDir ? "ok" : "workspaceDir is not available",
+    })),
+    detectedScripts: Object.fromEntries(Object.entries(scripts).map(([scope, list]) => [scope, [...list].sort()])),
+  };
+}
+
+function readPackageJsonIfPresent(cwd: string): PackageJson | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path.join(cwd, "package.json"), "utf-8")) as PackageJson;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function commandFailureHint(output: string, command: string): CommandFailureHint {
+  const text = output.trim();
+  const missingPackageMatch = text.match(/Cannot find package ['"]([^'"]+)['"]/i);
+  if (missingPackageMatch) {
+    const packageName = missingPackageMatch[1];
+    const jsdomContext = packageName === "jsdom" && /environment:\s*["']?jsdom|environment["']?:\s*["']jsdom|vitest/i.test(text);
     return {
-      label,
-      argv: spec.argv,
-      description: spec.description,
-      scope: scope ?? null,
-      cwd,
-      available,
-      reason: available ? "ok" : `未找到包含 scripts.${requireScript} 的 package.json`,
+      failureKind: "missing_dependency",
+      failureSummary: jsdomContext
+        ? "单元测试未能启动：项目配置了 Vitest jsdom 测试环境，但当前依赖中缺少 jsdom。"
+        : `命令未能启动：当前依赖中缺少 ${packageName}。`,
+      suggestedAction: `在对应工作区安装缺失依赖：npm install -D ${packageName}，然后重新运行 ${command}。`,
+    };
+  }
+
+  const missingModuleMatch = text.match(/Cannot find module ['"]([^'"]+)['"]/i);
+  if (missingModuleMatch) {
+    const moduleName = missingModuleMatch[1];
+    return {
+      failureKind: "missing_dependency",
+      failureSummary: `命令未能启动：当前依赖中缺少 ${moduleName}。`,
+      suggestedAction: `安装缺失依赖或确认包名/路径正确后，重新运行 ${command}。`,
+    };
+  }
+
+  if (/workspace 依赖未安装|node_modules/i.test(text) && /npm install/i.test(text)) {
+    return {
+      failureKind: "missing_dependency",
+      failureSummary: "验证命令未执行：当前工作区依赖尚未安装。",
+      suggestedAction: "先在仓库根目录执行 npm install，再重新运行质量门禁。",
+    };
+  }
+
+  if (/timed out|timeout/i.test(text)) {
+    return {
+      failureKind: "runtime_environment",
+      failureSummary: "验证命令运行超时，当前结果不能证明代码是否通过。",
+      suggestedAction: "检查命令是否卡在交互输入、外部服务或长时间构建任务上，再重新运行质量门禁。",
+    };
+  }
+
+  if (/Failed to start forks worker|vitest-pool/i.test(text)) {
+    return {
+      failureKind: "runtime_environment",
+      failureSummary: "单元测试运行器启动失败，测试用例尚未真正执行。",
+      suggestedAction: "优先检查测试环境依赖和 Vitest 配置，再重新运行单元测试。",
     };
   }
 
   return {
-    workspaceDir: workspace.workspaceDir,
-    candidates: [
-      pick("npm:typecheck", "typecheck"),
-      pick("npm:lint", "lint"),
-      pick("npm:test", "test"),
-      pick("npm:build", "build"),
-    ].filter(Boolean),
-    detectedScripts: Object.fromEntries(Object.entries(scripts).map(([scope, list]) => [scope, [...list].sort()])),
+    failureKind: "command_failed",
+    failureSummary: "验证命令执行失败，需要查看日志定位具体断言或构建错误。",
+    suggestedAction: `查看原始日志后修复对应问题，再重新运行 ${command}。`,
   };
+}
+
+function commandWarningHint(output: string): CommandWarningHint | null {
+  const text = output.trim();
+  if (!text) return null;
+
+  const chunkWarningMatch = text.match(/Some chunks are larger than\s+([0-9.]+\s*kB)\s+after minification/i);
+  if (chunkWarningMatch) {
+    return {
+      warningKind: "bundle_size",
+      warningSummary: `构建已通过，但部分打包产物超过 ${chunkWarningMatch[1]}，可能影响首屏加载性能。`,
+    };
+  }
+
+  if (/deprecated|deprecation/i.test(text)) {
+    return {
+      warningKind: "deprecation",
+      warningSummary: "命令已通过，但输出了废弃用法警告，后续升级依赖时可能需要处理。",
+    };
+  }
+
+  if (/warning/i.test(text)) {
+    return {
+      warningKind: "unknown",
+      warningSummary: "命令已通过，但输出了警告信息。",
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -239,7 +365,8 @@ function detectWorkflowCommands(workspace: WorkspaceContext) {
  */
 async function runWorkspaceCommand(workspace: WorkspaceContext, input: RuntimeToolInput) {
   const label = String(input.label ?? "");
-  const spec = COMMAND_WHITELIST[label];
+  const customCommand = typeof input.command === "string" && input.command.trim() ? input.command.trim() : "";
+  const spec = customCommand ? { argv: [customCommand], description: String(input.description ?? "自定义检查") } : COMMAND_WHITELIST[label];
   if (!spec) {
     throw new Error(`run_command 不允许的命令 label: ${label}`);
   }
@@ -259,6 +386,7 @@ async function runWorkspaceCommand(workspace: WorkspaceContext, input: RuntimeTo
   const cwd = resolveCommandCwd(workspace, input.cwd);
   const command = spec.argv.join(" ");
   if (label.startsWith("npm:") && !hasInstalledDependencies(workspace, cwd)) {
+    const stderrPreview = "workspace 依赖未安装：请先在仓库根目录执行 npm install，再运行质量门禁。";
     return {
       label,
       command,
@@ -267,17 +395,26 @@ async function runWorkspaceCommand(workspace: WorkspaceContext, input: RuntimeTo
       durationMs: 0,
       status: "not_executed" as const,
       stdoutPreview: "",
-      stderrPreview: "workspace 依赖未安装：请先在仓库根目录执行 npm install，再运行质量门禁。",
+      stderrPreview,
+      ...commandFailureHint(stderrPreview, command),
     };
   }
-  const [bin, ...args] = spec.argv;
   const startedAt = performance.now();
   try {
-    const { stdout, stderr } = await execFileAsync(bin, args, {
-      cwd,
-      timeout: COMMAND_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    const { stdout, stderr } = customCommand
+      ? await execAsync(customCommand, {
+        cwd,
+        timeout: COMMAND_TIMEOUT_MS,
+        maxBuffer: 10 * 1024 * 1024,
+      })
+      : await execFileAsync(spec.argv[0], spec.argv.slice(1), {
+        cwd,
+        timeout: COMMAND_TIMEOUT_MS,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    const stdoutPreview = stdout.slice(-maxStreamChars);
+    const stderrPreview = stderr.slice(-maxStreamChars);
+    const warning = commandWarningHint(`${stderrPreview}\n${stdoutPreview}`);
     return {
       label,
       command,
@@ -285,12 +422,15 @@ async function runWorkspaceCommand(workspace: WorkspaceContext, input: RuntimeTo
       exitCode: 0,
       durationMs: Math.round(performance.now() - startedAt),
       status: "passed" as const,
-      stdoutPreview: stdout.slice(-maxStreamChars),
-      stderrPreview: stderr.slice(-maxStreamChars),
+      stdoutPreview,
+      stderrPreview,
+      ...(warning ?? {}),
     };
   } catch (error) {
     const err = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number | string };
     const exitCode = typeof err.code === "number" ? err.code : null;
+    const stderrPreview = (err.stderr ?? err.message ?? "").slice(-maxStreamChars);
+    const stdoutPreview = (err.stdout ?? "").slice(-maxStreamChars);
     return {
       label,
       command,
@@ -298,8 +438,9 @@ async function runWorkspaceCommand(workspace: WorkspaceContext, input: RuntimeTo
       exitCode,
       durationMs: Math.round(performance.now() - startedAt),
       status: "failed" as const,
-      stdoutPreview: (err.stdout ?? "").slice(-maxStreamChars),
-      stderrPreview: (err.stderr ?? err.message ?? "").slice(-maxStreamChars),
+      stdoutPreview,
+      stderrPreview,
+      ...commandFailureHint(`${stderrPreview}\n${stdoutPreview}`, command),
     };
   }
 }

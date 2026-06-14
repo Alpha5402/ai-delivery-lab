@@ -16,9 +16,9 @@ export function RequirementComposer({ requirement }: { requirement: RequirementD
       </div>
       <Text style={{ fontSize: 16, lineHeight: 1.7, maxWidth: 820, display: "block" }}>{requirement.rawText}</Text>
       <Space wrap style={{ marginTop: 18 }}>
-        <Tag>{requirement.pattern}</Tag>
-        <Tag>{requirement.targetRepo}</Tag>
-        <Tag>L1 演示链路</Tag>
+        <Tag color="blue" variant="filled">{requirement.pattern}</Tag>
+        <Tag color="default" variant="filled">{requirement.targetRepo}</Tag>
+        <Tag color="purple" variant="filled">L1 演示链路</Tag>
       </Space>
     </Card>
   );

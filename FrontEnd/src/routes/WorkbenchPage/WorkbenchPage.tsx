@@ -1,18 +1,21 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useParams } from "react-router-dom";
-import { Alert, Button, Card, Collapse, Input, Modal, Progress, Space, Statistic, Tabs, Tag, Timeline, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Collapse, Input, Modal, Progress, Space, Statistic, Tabs, Tag, Timeline, Tooltip, Typography, message } from "antd";
 const { Text } = Typography;
 import {
+  confirmRecalledCases,
   confirmWorkflowStep,
   createStepIntervention,
-  getAgentMetrics,
+  deleteExecutionTreeNode,
+  favoriteWorkflowRunCase,
   getProjectWorkspace,
   getRepositorySnapshot,
   getWorkflowRun,
   openWorkspace,
   replayWorkflowFrom,
-  repairCodeReview,
+  retryCodeGenerationFromCodeReview,
+  restoreExecutionTreeNode,
   restoreStepSnapshot,
   runWorkflowStep,
   subscribeWorkflowRun,
@@ -25,7 +28,6 @@ import { RepositoryChanges } from "../../components/RepositoryChanges/Repository
 import { TestResultPanel } from "../../components/TestResultPanel/TestResultPanel";
 import stageContinueIcon from "../../assets/icons/stage-continue.svg";
 import stageReplayIcon from "../../assets/icons/stage-replay.svg";
-import { summarizeMetrics } from "../../features/observability/metricsSummary";
 import type { AgentMetric } from "../../features/observability/types";
 import type { RepositorySnapshot } from "../../features/repository/types";
 import type {
@@ -39,6 +41,8 @@ import type {
   SolutionDsl,
   StepRun,
   VerificationResult,
+  WorkflowExecutionNode,
+  WorkflowExecutionTree,
   WorkflowRun,
   WorkflowStepId,
 } from "../../features/workflow/types";
@@ -61,6 +65,28 @@ function SummaryCard({ title, children }: { title: string; children: ReactNode }
       {children}
     </section>
   );
+}
+
+function getExecutionTreeActivePath(tree: WorkflowExecutionTree) {
+  const path = new Set<string>();
+  let current = tree.nodes[tree.activeNodeId];
+  while (current) {
+    path.add(current.id);
+    current = current.parentNodeId ? tree.nodes[current.parentNodeId] : undefined;
+  }
+  return path;
+}
+
+function formatExecutionReason(reason: WorkflowExecutionNode["reason"]) {
+  const labels: Record<WorkflowExecutionNode["reason"], string> = {
+    initial: "初始路径",
+    continue: "继续生成",
+    replay: "重放",
+    regenerate: "重新生成",
+    restore: "还原",
+    "review-retry": "按审查意见重跑",
+  };
+  return labels[reason] ?? reason;
 }
 
 function EmptyStepSummary({ step }: { step: StepRun }) {
@@ -130,6 +156,124 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+type RunMetricsSummary = {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+  estimatedCost: number;
+};
+
+function emptyMetricsSummary(): RunMetricsSummary {
+  return { calls: 0, inputTokens: 0, outputTokens: 0, latencyMs: 0, estimatedCost: 0 };
+}
+
+function isMetricLike(value: unknown): value is AgentMetric {
+  if (!isRecord(value)) return false;
+  return ["calls", "inputTokens", "outputTokens", "latencyMs", "estimatedCost"].every((key) => typeof value[key] === "number");
+}
+
+function addMetric(summary: RunMetricsSummary, metric: AgentMetric): RunMetricsSummary {
+  return {
+    calls: summary.calls + metric.calls,
+    inputTokens: summary.inputTokens + metric.inputTokens,
+    outputTokens: summary.outputTokens + metric.outputTokens,
+    latencyMs: summary.latencyMs + metric.latencyMs,
+    estimatedCost: summary.estimatedCost + metric.estimatedCost,
+  };
+}
+
+function getStepEmbeddedMetrics(output: unknown): AgentMetric[] {
+  if (!isRecord(output) || !Array.isArray(output.__metrics)) return [];
+  return output.__metrics.filter(isMetricLike);
+}
+
+function sumToolCallDurations(value: unknown): number {
+  if (!Array.isArray(value)) return 0;
+  return value.reduce((total, item) => {
+    if (!isRecord(item) || typeof item.durationMs !== "number") return total;
+    return total + Math.max(0, item.durationMs);
+  }, 0);
+}
+
+function getLegacyStepMetrics(step: StepRun): RunMetricsSummary {
+  const summary = emptyMetricsSummary();
+  const output = step.output;
+  if (!isRecord(output)) return summary;
+
+  const runtimeTrace = output.runtimeTrace;
+  if (isRecord(runtimeTrace)) {
+    const toolLatency = sumToolCallDurations(runtimeTrace.toolCalls);
+    if (toolLatency > 0) {
+      summary.calls += 1;
+      summary.latencyMs += toolLatency;
+    }
+  }
+
+  if (step.id === "verification" && Array.isArray(output.commands)) {
+    const commandLatency = output.commands.reduce((total, command) => {
+      if (!isRecord(command) || typeof command.durationMs !== "number") return total;
+      return total + Math.max(0, command.durationMs);
+    }, 0);
+    if (commandLatency > 0) {
+      summary.calls += output.commands.length;
+      summary.latencyMs += commandLatency;
+    }
+  }
+
+  return summary;
+}
+
+function summarizeRunMetrics(run: WorkflowRun): RunMetricsSummary {
+  return run.steps.reduce((summary, step) => {
+    const stepMetrics = Array.isArray((step as { metrics?: unknown }).metrics)
+      ? ((step as { metrics?: unknown[] }).metrics ?? []).filter(isMetricLike)
+      : [];
+    const embedded = stepMetrics.length > 0 ? stepMetrics : getStepEmbeddedMetrics(step.output);
+    if (embedded.length > 0) {
+      return embedded.reduce(addMetric, summary);
+    }
+    const legacy = getLegacyStepMetrics(step);
+    return {
+      calls: summary.calls + legacy.calls,
+      inputTokens: summary.inputTokens + legacy.inputTokens,
+      outputTokens: summary.outputTokens + legacy.outputTokens,
+      latencyMs: summary.latencyMs + legacy.latencyMs,
+      estimatedCost: summary.estimatedCost + legacy.estimatedCost,
+    };
+  }, emptyMetricsSummary());
+}
+
+function summarizeRunAgentMetrics(run: WorkflowRun): AgentMetric[] {
+  const grouped = new Map<string, AgentMetric>();
+
+  for (const step of run.steps) {
+    const stepMetrics = Array.isArray((step as { metrics?: unknown }).metrics)
+      ? ((step as { metrics?: unknown[] }).metrics ?? []).filter(isMetricLike)
+      : [];
+    for (const metric of stepMetrics.length > 0 ? stepMetrics : getStepEmbeddedMetrics(step.output)) {
+      const existing = grouped.get(metric.agent) ?? {
+        agent: metric.agent,
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        latencyMs: 0,
+        estimatedCost: 0,
+      };
+      grouped.set(metric.agent, {
+        agent: metric.agent,
+        calls: existing.calls + metric.calls,
+        inputTokens: existing.inputTokens + metric.inputTokens,
+        outputTokens: existing.outputTokens + metric.outputTokens,
+        latencyMs: existing.latencyMs + metric.latencyMs,
+        estimatedCost: existing.estimatedCost + metric.estimatedCost,
+      });
+    }
+  }
+
+  return [...grouped.values()].sort((a, b) => b.latencyMs - a.latencyMs);
+}
+
 function getCodeGenerationTaskTestFiles(task: CodeGenerationPlan["tasks"][number]) {
   return (task as { testFiles?: string[] }).testFiles ?? [];
 }
@@ -159,6 +303,50 @@ function formatVerificationCommandLabel(label: VerificationCommand["label"]) {
   }
 }
 
+function getVerificationFailureSummary(command: VerificationCommand) {
+  if (command.failureSummary || command.suggestedAction) {
+    return {
+      summary: command.failureSummary ?? "验证命令执行失败。",
+      action: command.suggestedAction,
+    };
+  }
+
+  const output = `${command.stderrPreview}\n${command.stdoutPreview}`;
+  const missingPackageMatch = output.match(/Cannot find package ['"]([^'"]+)['"]/i);
+  if (missingPackageMatch) {
+    const packageName = missingPackageMatch[1];
+    return {
+      summary: packageName === "jsdom"
+        ? "单元测试未能启动：项目配置了 jsdom 测试环境，但当前依赖中缺少 jsdom。"
+        : `命令未能启动：当前依赖中缺少 ${packageName}。`,
+      action: `安装缺失依赖 npm install -D ${packageName} 后重新运行质量门禁。`,
+    };
+  }
+
+  if (/Failed to start forks worker|vitest-pool/i.test(output)) {
+    return {
+      summary: "单元测试运行器启动失败，测试用例尚未真正执行。",
+      action: "优先检查测试环境依赖和 Vitest 配置，再重新运行单元测试。",
+    };
+  }
+
+  if (command.status === "not_executed") {
+    return {
+      summary: "验证命令未执行，当前结果不能证明代码是否通过。",
+      action: "检查本地依赖、工作区路径或运行环境后重新执行。",
+    };
+  }
+
+  if (command.status === "failed") {
+    return {
+      summary: "验证命令执行失败。",
+      action: "查看原始日志后修复对应问题，再重新运行质量门禁。",
+    };
+  }
+
+  return null;
+}
+
 function VerificationCommandList({ commands }: { commands: VerificationCommand[] }) {
   if (commands.length === 0) {
     return <p className="patch-empty-row">未检测到可执行质量门禁，当前阶段默认放行。</p>;
@@ -168,12 +356,13 @@ function VerificationCommandList({ commands }: { commands: VerificationCommand[]
     <div className="verification-command-list">
       {commands.map((command, index) => {
         const failed = command.status === "failed" || command.status === "not_executed";
-        const output = command.stderrPreview.trim() || command.stdoutPreview.trim();
+        const failure = failed ? getVerificationFailureSummary(command) : null;
+        const warning = command.warningSummary;
         return (
           <article className={`verification-command ${failed ? "verification-command--failed" : ""}`} key={`${command.label}-${index}`}>
             <div className="verification-command__header">
               <strong>{formatVerificationCommandLabel(command.label)}</strong>
-              <Tag color={failed ? "error" : "success"} variant="outlined">{formatRuntimeStatusValue(command.status)}</Tag>
+              <Tag color={failed ? "error" : "success"} variant="filled">{formatRuntimeStatusValue(command.status)}</Tag>
             </div>
             <div className="verification-command__meta">
               <span>{command.command}</span>
@@ -181,7 +370,18 @@ function VerificationCommandList({ commands }: { commands: VerificationCommand[]
               <span>{formatDuration(command.durationMs)}</span>
             </div>
             <Typography.Text className="verification-command__cwd" ellipsis>{command.cwd}</Typography.Text>
-            {output ? <pre className="verification-command__output">{output}</pre> : null}
+            {failure ? (
+              <div className="verification-command__diagnosis">
+                <strong>{failure.summary}</strong>
+                {failure.action ? <span>{failure.action}</span> : null}
+              </div>
+            ) : null}
+            {!failure && warning ? (
+              <div className="verification-command__warning">
+                <strong>通过，但有警告</strong>
+                <span>{warning}</span>
+              </div>
+            ) : null}
           </article>
         );
       })}
@@ -424,14 +624,14 @@ function renderStepSummary(step: StepRun) {
             <p>{result.summary}</p>
           </SummaryCard>
           <SummaryCard title="审查结论">
-            <Tag color={result.decision === "approve" ? "success" : "error"}>{result.decision === "approve" ? "通过" : "需要修改"}</Tag>
+            <Tag color={result.decision === "approve" ? "success" : "error"} variant="filled">{result.decision === "approve" ? "通过" : "需要修改"}</Tag>
           </SummaryCard>
           {findings.length > 0 && (
             <SummaryCard title={`审查发现 (${findings.length})`}>
               <ul className="step-summary__list">
                 {findings.map((f) => (
                   <li key={f.id}>
-                    <Tag color={getCodeReviewSeverityColor(f.severity)}>{f.severity}</Tag>
+                    <Tag color={getCodeReviewSeverityColor(f.severity)} variant="filled">{f.severity}</Tag>
                     <strong>{f.title}</strong>
                     <small>{f.detail}{f.file ? ` · ${f.file}${f.line ? `:${f.line}` : ""}` : ""}</small>
                   </li>
@@ -443,7 +643,7 @@ function renderStepSummary(step: StepRun) {
             <SummaryCard title="检查清单">
               <ul className="step-summary__list">
                 {checklist.map((c) => (
-                  <li key={c.id}><Tag color={c.status === "passed" ? "green" : c.status === "failed" ? "red" : "orange"}>{c.status}</Tag> {c.label}{c.detail ? ` — ${c.detail}` : ""}</li>
+                  <li key={c.id}><Tag color={c.status === "passed" ? "green" : c.status === "failed" ? "red" : "orange"} variant="filled">{c.status}</Tag> {c.label}{c.detail ? ` — ${c.detail}` : ""}</li>
                 ))}
               </ul>
             </SummaryCard>
@@ -543,15 +743,15 @@ const stepBannerCopy: Partial<Record<WorkflowStepId, Partial<Record<RuntimeStatu
     waiting: { eyebrow: "等待方案", title: "等待生成方案", description: "需求确认后，AI 会拆解实现路径和验收策略。" },
     running: { eyebrow: "正在设计", title: "正在生成方案", description: "正在把需求拆成实现策略、验收标准和风险假设。" },
     blocked: { eyebrow: "需要审核", title: "请审核交付方案", description: "确认方案是否符合目标，或补充约束后重新生成。" },
-    success: { eyebrow: "方案完成", title: "交付方案已生成", description: "方案已保存，下一步会定位代码和影响模块。" },
+    success: { eyebrow: "方案完成", title: "交付方案已生成", description: "方案已保存，下一步会生成代码变更。" },
     failed: { eyebrow: "方案失败", title: "生成方案失败", description: "方案未生成，请查看失败原因后重试。" },
   },
   module_mapping: {
-    waiting: { eyebrow: "等待定位", title: "等待定位代码", description: "方案完成后，AI 会查找需要修改的模块和文件。" },
-    running: { eyebrow: "正在定位", title: "正在定位代码", description: "正在分析项目结构，匹配实现文件、测试文件和相关上下文。" },
-    blocked: { eyebrow: "需要复核", title: "请复核代码定位", description: "确认影响文件是否合理，或补充你知道的入口与边界。" },
-    success: { eyebrow: "已定位", title: "代码位置已确认", description: "相关模块和文件已定位，下一步会进入代码生成。" },
-    failed: { eyebrow: "定位失败", title: "定位代码失败", description: "代码定位未完成，请检查仓库上下文或重试。" },
+    waiting: { eyebrow: "旧版阶段", title: "等待生成代码", description: "旧版定位阶段已合并到生成代码。" },
+    running: { eyebrow: "旧版阶段", title: "正在生成代码", description: "旧版定位阶段已合并到生成代码。" },
+    blocked: { eyebrow: "旧版阶段", title: "请复核生成代码", description: "旧版定位阶段已合并到生成代码。" },
+    success: { eyebrow: "旧版阶段", title: "生成代码已准备", description: "旧版定位阶段已合并到生成代码。" },
+    failed: { eyebrow: "旧版阶段", title: "生成代码失败", description: "旧版定位阶段已合并到生成代码。" },
   },
   code_generation: {
     waiting: { eyebrow: "等待生成", title: "等待生成代码", description: "上游阶段完成后会进入代码生成。" },
@@ -564,7 +764,7 @@ const stepBannerCopy: Partial<Record<WorkflowStepId, Partial<Record<RuntimeStatu
   code_review: {
     waiting: { eyebrow: "等待审查", title: "等待代码审查", description: "代码生成后，AI 会基于真实 diff 做一次交付前审查。" },
     running: { eyebrow: "正在审查", title: "正在审查代码", description: "正在检查功能正确性、风险、测试覆盖和可维护性。" },
-    blocked: { eyebrow: "需要处理", title: "代码审查发现问题", description: "你可以按审查意见修复并复审，也可以选择继续推进。" },
+    blocked: { eyebrow: "需要处理", title: "代码审查发现问题", description: "Retry 会带着审查意见回到生成代码阶段重新生成；你也可以选择继续推进。" },
     success: { eyebrow: "审查完成", title: "代码审查已通过", description: "审查结论已保存，可继续进入质量门禁。" },
     failed: { eyebrow: "审查失败", title: "代码审查失败", description: "审查未完成，请查看失败原因后重试。" },
   },
@@ -593,6 +793,13 @@ const stepBannerCopy: Partial<Record<WorkflowStepId, Partial<Record<RuntimeStatu
 };
 
 function getRuntimeBannerCopy(step: StepRun, status: RuntimeStatus) {
+  if (step.id === "code_review" && status === "blocked" && codeReviewApproved(step)) {
+    return {
+      eyebrow: "等待确认",
+      title: "代码审查已通过",
+      description: "审查结论已通过。确认后会继续进入质量门禁。",
+    };
+  }
   return stepBannerCopy[step.id]?.[status] ?? runtimeStateCopy[status];
 }
 
@@ -616,7 +823,7 @@ function formatAgentName(value: string) {
     "Requirement Composer": "接收需求",
     "Clarifier Agent": "确认需求",
     "Planner Agent": "生成方案",
-    "Context Locator": "定位代码",
+    "Context Locator": "生成代码",
     "Codegen Skill": "生成代码",
     "Code Review Agent": "代码审查",
     Verifier: "验证结果",
@@ -631,7 +838,7 @@ function formatStepLabel(value: string) {
     "PM 输入": "接收需求",
     "澄清 Agent": "确认需求",
     "方案 DSL": "生成方案",
-    "模块定位": "定位代码",
+    "模块定位": "生成代码",
     "代码计划": "生成代码",
     "代码审查": "代码审查",
     "写入仓库": "生成代码",
@@ -656,7 +863,7 @@ function formatRuntimeEventTitle(title: string) {
     "Requirement Composer": "接收需求",
     "Clarifier Agent": "确认需求",
     "Planner Agent": "生成方案",
-    "Context Locator": "定位代码",
+    "Context Locator": "生成代码",
     "Codegen Skill": "生成代码",
     "Code Review Agent": "代码审查",
     Verifier: "验证结果",
@@ -743,6 +950,20 @@ function codeReviewNeedsRepair(step: StepRun): boolean {
   return r.decision === "request-changes";
 }
 
+function codeReviewApproved(step: StepRun): boolean {
+  if (step.id !== "code_review" || !step.output) return false;
+  const r = step.output as Record<string, unknown>;
+  return r.decision === "approve";
+}
+
+function hasCodeReviewRetryContext(step?: StepRun | null): boolean {
+  return Boolean(step?.interventions?.some((message) =>
+    message.stepId === "code_generation" &&
+    message.role === "system" &&
+    message.content.includes("entry=code_review_retry"),
+  ));
+}
+
 function getCodeReviewSeverityColor(severity: string) {
   switch (severity) {
     case "blocker":
@@ -811,8 +1032,8 @@ function RuntimeTimeline({
                 </span>
                 <span className="runtime-step__agent">{formatAgentName(step.agent)}</span>
                 <span className="runtime-step__footer">
-                  <Tag color={runtimeStatusColors[status]} variant="outlined">{runtimeStatusLabels[status]}</Tag>
-                  {(step.replayCount ?? 0) > 0 ? <Tag color="purple" variant="outlined">重跑 {step.replayCount} 次</Tag> : null}
+                  <Tag color={runtimeStatusColors[status]} variant="filled">{runtimeStatusLabels[status]}</Tag>
+                  {(step.replayCount ?? 0) > 0 ? <Tag color="purple" variant="filled">重跑 {step.replayCount} 次</Tag> : null}
                 </span>
               </article>
             ),
@@ -894,10 +1115,10 @@ function StepProgress({
               <span className="task-stepper__actions">
                 {repairActive ? (
                   <Button
-                    aria-label={`按审查意见修复并复审 ${formatStepLabel(step.label)}`}
+                    aria-label={`按审查意见重跑生成代码 ${formatStepLabel(step.label)}`}
                     className="task-stepper__action task-stepper__repair task-stepper__action--available task-stepper__repair--cue"
                     size="small"
-                    title="按审查意见修复并重新审查"
+                    title="按审查意见重跑生成代码"
                     type="text"
                     onClick={(event) => {
                       event.stopPropagation();
@@ -989,7 +1210,7 @@ function StepChatThread({
           <span>反馈</span>
           <h3>当前阶段反馈</h3>
         </div>
-        {waitingForUser ? <Tag color="warning" variant="outlined">待审核</Tag> : <Tag variant="outlined">反馈历史</Tag>}
+        {waitingForUser ? <Tag color="warning" variant="filled">待审核</Tag> : <Tag color="default" variant="filled">反馈历史</Tag>}
       </header>
       {waitingForUser ? (
         <div className="runtime-chat__waiting">
@@ -1384,7 +1605,7 @@ function RuntimeMemoryPanel({ messages }: { messages: InterventionMessage[] }) {
     "technical-constraint": { label: "技术约束", color: "cyan" },
     risk: { label: "风险规避", color: "orange" },
     preference: { label: "用户偏好", color: "green" },
-    other: { label: "其他", color: "default" },
+    other: { label: "其他", color: "lime" },
   };
   const sourceLabel: Record<DecisionMemoryItem["source"], string> = {
     "user-confirmed": "用户确认",
@@ -1401,8 +1622,8 @@ function RuntimeMemoryPanel({ messages }: { messages: InterventionMessage[] }) {
       {items.length ? items.map((item) => (
         <SurfaceCard key={item.id} title={item.title} tone="muted">
           <Space wrap size={4}>
-            <Tag color={typeTags[item.type].color}>{typeTags[item.type].label}</Tag>
-            {item.target && <Tag variant="outlined">{item.target}</Tag>}
+            <Tag color={typeTags[item.type].color} variant="filled">{typeTags[item.type].label}</Tag>
+            {item.target && <Tag color="default" variant="filled">{item.target}</Tag>}
           </Space>
           <div style={{ margin: "4px 0", color: "#344054", fontSize: 13, lineHeight: 1.5 }}>
             {item.content}
@@ -1583,11 +1804,27 @@ function getCodeDeliveryEffectiveStep(codegenStep?: StepRun, repoWriteStep?: Ste
   return codegenStep;
 }
 
-/** 兼容旧版运行：把 code_generation + repo_write 合并为一个展示步骤。 */
+/** 兼容旧版运行：把 module_mapping + code_generation (+ repo_write) 合并为一个展示步骤。 */
 function getDisplaySteps(steps: StepRun[]): DisplayStep[] {
   const result: DisplayStep[] = [];
   let i = 0;
   while (i < steps.length) {
+    if (steps[i].id === "module_mapping" && i + 1 < steps.length && steps[i + 1].id === "code_generation") {
+      const sources = [steps[i], steps[i + 1]];
+      if (i + 2 < steps.length && steps[i + 2].id === "repo_write") {
+        sources.push(steps[i + 2]);
+      }
+      result.push({
+        id: "code_delivery",
+        label: "生成代码",
+        sourceStepIds: sources.map((step) => step.id),
+        status: mergedCodeDeliveryStatus(sources),
+        sourceSteps: sources,
+      });
+      i += sources.length;
+      continue;
+    }
+
     if (steps[i].id === "code_generation" && i + 1 < steps.length && steps[i + 1].id === "repo_write") {
       const cg = steps[i];
       const rw = steps[i + 1];
@@ -1595,7 +1832,7 @@ function getDisplaySteps(steps: StepRun[]): DisplayStep[] {
         id: "code_delivery",
         label: "生成代码",
         sourceStepIds: ["code_generation", "repo_write"],
-        status: mergedStepStatus(cg.status, rw.status),
+        status: mergedCodeDeliveryStatus([cg, rw]),
         sourceSteps: [cg, rw],
       });
       i += 2;
@@ -1613,12 +1850,13 @@ function getDisplaySteps(steps: StepRun[]): DisplayStep[] {
   return result;
 }
 
-function mergedStepStatus(cgStatus: string, rwStatus: string): DisplayStep["status"] {
-  if (cgStatus === "failed" || rwStatus === "failed") return "failed";
-  if (cgStatus === "running" || rwStatus === "running") return "running";
-  if (rwStatus === "waiting-human") return "waiting-human";
-  if (rwStatus === "success") return "success";
-  if (cgStatus === "waiting-human") return "waiting-human";
+function mergedCodeDeliveryStatus(sourceSteps: StepRun[]): DisplayStep["status"] {
+  if (sourceSteps.some((step) => step.status === "failed")) return "failed";
+  if (sourceSteps.some((step) => step.status === "running")) return "running";
+  if (sourceSteps.some((step) => step.status === "waiting-human")) return "waiting-human";
+  const repoWrite = sourceSteps.find((step) => step.id === "repo_write");
+  const codegen = sourceSteps.find((step) => step.id === "code_generation");
+  if (repoWrite?.status === "success" || codegen?.status === "success") return "success";
   return "idle";
 }
 
@@ -1723,7 +1961,7 @@ function CodeDeliveryWorkspace({
                         label: (
                           <Tooltip title={file.path}>
                             <span className="changed-file-row">
-                              <Tag className="changed-file-row__type" variant="outlined">{getFileType(file.path)}</Tag>
+                              <Tag className="changed-file-row__type" color="default" variant="filled">{getFileType(file.path)}</Tag>
                               <span className="changed-file-row__identity">
                                 <Typography.Text className="changed-file-row__path" ellipsis>{splitFilePath(file.path).directory || "./"}</Typography.Text>
                                 <Typography.Text className="changed-file-row__name" ellipsis>{splitFilePath(file.path).filename}</Typography.Text>
@@ -1747,36 +1985,51 @@ function CodeDeliveryWorkspace({
                             allItems.push({ type: "test", task: t, implTask: implTask ?? t });
                           }
 
-                          const layerLabel: Record<string, string> = { data: "数据层", api: "接口层", ui: "界面层" };
+                          const layerLabel: Record<string, string> = {
+                            data: "数据层",
+                            api: "接口层",
+                            ui: "界面层",
+                            state: "状态",
+                            routing: "路由",
+                            style: "样式",
+                            auth: "认证",
+                            test: "测试",
+                          };
                           return (
                             <div style={{ display: "grid", gap: 6, padding: "4px 0" }}>
                               {allItems.map((item, i) => {
                                 const isImpl = item.type === "impl";
                                 const implTask = isImpl ? item.task : (item as { implTask: typeof fileTasks[0] }).implTask;
                                 const testFiles = getCodeGenerationTaskTestFiles(implTask);
+                                const expectedChange = (implTask as { expectedChange?: string }).expectedChange;
+                                const testIntent = (implTask as { testIntent?: string }).testIntent;
+                                const criteriaRefs = (implTask as { acceptanceCriteriaRefs?: string[] }).acceptanceCriteriaRefs ?? [];
                                 return (
                                   <div className="code-delivery-task-meta" key={`${item.task.id}-${i}`}>
                                     <strong className="code-delivery-task-meta__title">
                                       {isImpl
-                                        ? implTask.title
+                                        ? expectedChange || implTask.title
                                         : `为 ${implTask.title?.replace(/^(实现|重构|新增|修复)\s*/, "").slice(0, 20) || "相关实现"} 补齐单元测试`}
                                     </strong>
                                     <span className="code-delivery-task-meta__tags">
+                                      {criteriaRefs.map((ref) => (
+                                        <Tag key={ref} className="code-delivery-tag code-delivery-tag--target" color="purple" variant="filled">验收 {ref}</Tag>
+                                      ))}
                                       {isImpl ? (
                                         <>
                                           {testFiles.length > 0 && testFiles.map((tf) => (
-                                            <Tag key={tf} className="code-delivery-tag code-delivery-tag--test" color="geekblue" variant="outlined">单元测试 {tf}</Tag>
+                                            <Tag key={tf} className="code-delivery-tag code-delivery-tag--test" color="geekblue" variant="filled">单元测试 {tf}</Tag>
                                           ))}
                                           {implTask.coverLayer && (
-                                            <Tag className="code-delivery-tag code-delivery-tag--layer" color="blue" variant="outlined">{layerLabel[implTask.coverLayer] ?? implTask.coverLayer}</Tag>
+                                            <Tag className="code-delivery-tag code-delivery-tag--layer" color="blue" variant="filled">{layerLabel[implTask.coverLayer] ?? implTask.coverLayer}</Tag>
                                           )}
                                         </>
                                       ) : (
                                         <>
                                           {implTask.files?.length > 0 && implTask.files.map((f) => (
-                                            <Tag key={f} className="code-delivery-tag code-delivery-tag--target" color="geekblue" variant="outlined">测试对象 {f}</Tag>
+                                            <Tag key={f} className="code-delivery-tag code-delivery-tag--target" color="geekblue" variant="filled">测试对象 {f}</Tag>
                                           ))}
-                                          <Tag className="code-delivery-tag code-delivery-tag--test" color="blue" variant="outlined">单元测试</Tag>
+                                          <Tag className="code-delivery-tag code-delivery-tag--test" color="blue" variant="filled">{testIntent || "单元测试"}</Tag>
                                         </>
                                       )}
                                     </span>
@@ -1803,7 +2056,7 @@ function CodeDeliveryWorkspace({
                       />
                       <div className="intervention-composer__footer" style={{ marginTop: 8 }}>
                         <span>反馈会影响生成代码阶段的重新生成</span>
-                        <Button type="primary" loading={running} onClick={() => { if (draft?.trim()) onInterventionMessage(draft); }}>
+                        <Button className="settings-page__skill-button settings-page__skill-button--primary" loading={running} onClick={() => { if (draft?.trim()) onInterventionMessage(draft); }}>
                           提交反馈
                         </Button>
                       </div>
@@ -1824,7 +2077,7 @@ function ChangedFileLabel({ file }: { file: ChangedFileEntry }) {
   const pathParts = splitFilePath(path);
   return (
     <span className="changed-file-row">
-      <Tag className="changed-file-row__type" variant="outlined">{getFileType(path)}</Tag>
+      <Tag className="changed-file-row__type" color="default" variant="filled">{getFileType(path)}</Tag>
       <span className="changed-file-row__identity">
         <Typography.Text className="changed-file-row__path" ellipsis>{pathParts.directory || "./"}</Typography.Text>
         <Typography.Text className="changed-file-row__name" ellipsis>{pathParts.filename}</Typography.Text>
@@ -1851,7 +2104,7 @@ function highlightCodeLine(line: string) {
 }
 
 function isDiffMetadataLine(line: string) {
-  return /^(diff --git|index |--- |\+\+\+ )/.test(line);
+  return /^(diff --git|index |new file mode |deleted file mode |old mode |new mode |similarity index |rename from |rename to |Binary files |--- |\+\+\+ )/.test(line);
 }
 
 function getPreviewLineTone(line: string, file: ChangedFileEntry): "added" | "deleted" | "context" {
@@ -2055,9 +2308,12 @@ function RuntimeStateBanner({
   const lastLog = step.logs.at(-1);
   const stageLabel = formatStepLabel(step.label);
   const agentLabel = formatAgentName(step.agent);
+  const statusLabel = step.id === "code_review" && status === "blocked" && codeReviewApproved(step)
+    ? "待确认"
+    : runtimeStatusLabels[status];
   const statusLine = stageLabel === agentLabel
-    ? `${stageLabel} · ${runtimeStatusLabels[status]}`
-    : `${stageLabel} · ${agentLabel} · ${runtimeStatusLabels[status]}`;
+    ? `${stageLabel} · ${statusLabel}`
+    : `${stageLabel} · ${agentLabel} · ${statusLabel}`;
 
   return (
     <section className={`runtime-state-banner runtime-state-banner--${status}`}>
@@ -2072,24 +2328,32 @@ function RuntimeStateBanner({
 
 function OutputWorkspace({
   step,
+  run,
   workspaceView,
   onWorkspaceViewChange,
   onRestore,
+  onRestoreExecutionNode,
+  onDeleteExecutionNode,
   extraTabs = [],
   summaryChildren,
   summaryLabel = "结构化结果",
   compact = false,
 }: {
   step: StepRun;
+  run?: WorkflowRun;
   workspaceView: WorkspaceView;
   onWorkspaceViewChange: (value: WorkspaceView) => void;
   onRestore?: (snapshotId: string) => void;
+  onRestoreExecutionNode?: (nodeId: string) => void;
+  onDeleteExecutionNode?: (nodeId: string) => void;
   extraTabs?: Array<{ key: string; label: ReactNode; children: ReactNode }>;
   summaryChildren?: ReactNode;
   summaryLabel?: ReactNode;
   compact?: boolean;
 }) {
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const executionTree = run?.executionTree;
+  const activePath = executionTree ? getExecutionTreeActivePath(executionTree) : new Set<string>();
   const historyItems = (step.history ?? []).slice().reverse();
 
   function renderSnapshotPreview(snapshot: StepRun["history"][number]) {
@@ -2117,7 +2381,7 @@ function OutputWorkspace({
       content: "还原后，当前阶段将恢复到该历史输出，该阶段之后的所有阶段会被回滚为待重新生成，后续阶段需要基于还原后的结果重新推进。",
       okText: "确认还原",
       cancelText: "取消",
-      okButtonProps: { danger: true },
+      okButtonProps: { className: "settings-page__skill-button settings-page__skill-button--danger", danger: true },
       onOk: async () => {
         setRestoringId(snapshotId);
         try {
@@ -2133,10 +2397,143 @@ function OutputWorkspace({
     });
   }
 
+  async function doRestoreExecutionNode(nodeId: string) {
+    if (!onRestoreExecutionNode || restoringId) return;
+    Modal.confirm({
+      title: "切换到此执行节点？",
+      content: "这会切换当前执行路径，下游阶段需要重新生成；旧路径不会删除，仍可在执行路径中追溯。",
+      okText: "切换路径",
+      cancelText: "取消",
+      okButtonProps: { className: "settings-page__skill-button settings-page__skill-button--danger", danger: true },
+      onOk: async () => {
+        setRestoringId(nodeId);
+        try {
+          await onRestoreExecutionNode(nodeId);
+          message.success("已切换执行路径，下游阶段已重置");
+          onWorkspaceViewChange("summary");
+        } catch {
+          message.error("切换执行路径失败");
+        } finally {
+          setRestoringId(null);
+        }
+      },
+    });
+  }
+
+  async function doDeleteExecutionNode(nodeId: string) {
+    if (!onDeleteExecutionNode || restoringId) return;
+    Modal.confirm({
+      title: "删除此执行版本？",
+      content: "这会删除该版本以及它下面的所有子版本。删除后无法从执行路径中恢复，但不会影响当前正在使用的执行路径。",
+      okText: "删除此版本",
+      cancelText: "取消",
+      okButtonProps: { className: "settings-page__skill-button settings-page__skill-button--danger", danger: true },
+      onOk: async () => {
+        setRestoringId(nodeId);
+        try {
+          await onDeleteExecutionNode(nodeId);
+          message.success("已删除该执行版本及其子版本");
+        } catch {
+          message.error("删除执行版本失败");
+        } finally {
+          setRestoringId(null);
+        }
+      },
+    });
+  }
+
+  function renderExecutionNode(nodeId: string, depth = 0): ReactNode {
+    if (!executionTree) return null;
+    const node = executionTree.nodes[nodeId];
+    if (!node) return null;
+    const nodeStep = run?.steps.find((item) => item.id === node.stepId);
+    const previewStep: StepRun | undefined = nodeStep ? {
+      ...nodeStep,
+      status: node.status,
+      input: node.input,
+      output: node.output,
+      logs: node.logs,
+      interventions: node.interventions,
+      startedAt: node.startedAt,
+      finishedAt: node.finishedAt,
+    } : undefined;
+    const isActive = activePath.has(node.id);
+    const canRestore = node.output !== undefined && Boolean(onRestoreExecutionNode);
+    const canDelete = Boolean(onDeleteExecutionNode) && !isActive && executionTree.rootNodeId !== node.id;
+    const nodeHeader = (
+      <div className="execution-tree-node__header">
+        <div className="execution-tree-node__meta">
+          <strong>{formatStepLabel(nodeStep?.label ?? node.stepId)}</strong>
+          <span>{new Date(node.createdAt).toLocaleString()}</span>
+        </div>
+      </div>
+    );
+    const nodeActions = (
+      <Space size={6} wrap onClick={(event) => event.stopPropagation()}>
+        <Tag color={node.reason === "review-retry" ? "orange" : node.reason === "replay" ? "purple" : "blue"} variant="filled">
+          {formatExecutionReason(node.reason)}
+        </Tag>
+        <Tag color={isActive ? "green" : "default"} variant="filled">
+          {isActive ? "当前路径" : formatRuntimeStatusValue(node.status)}
+        </Tag>
+        {canRestore ? (
+          <Button className="settings-page__skill-button" size="small" loading={restoringId === node.id} onClick={() => doRestoreExecutionNode(node.id)}>还原到此节点</Button>
+        ) : null}
+        {canDelete ? (
+          <Button className="settings-page__skill-button settings-page__skill-button--danger" danger size="small" loading={restoringId === node.id} onClick={() => doDeleteExecutionNode(node.id)}>删除此版本</Button>
+        ) : null}
+      </Space>
+    );
+    const nodeBody = (
+      <div className="execution-tree-node__body">
+        {previewStep && node.output !== undefined ? (
+          <div className="execution-tree-node__preview">
+            {renderStepSummary(previewStep)}
+          </div>
+        ) : null}
+        {node.childNodeIds.length > 0 ? (
+          <div className="execution-tree-node__children">
+            {node.childNodeIds.map((childNodeId) => renderExecutionNode(childNodeId, depth + 1))}
+          </div>
+        ) : null}
+      </div>
+    );
+
+    return (
+      <div
+        key={node.id}
+        className={`execution-tree-node ${isActive ? "execution-tree-node--active" : ""}`}
+        style={{ marginLeft: depth * 18 }}
+      >
+        <Collapse
+          className="execution-tree-node__collapse"
+          collapsible="header"
+          ghost
+          items={[{
+            key: node.id,
+            label: nodeHeader,
+            extra: nodeActions,
+            children: nodeBody,
+            showArrow: false,
+          }]}
+        />
+      </div>
+    );
+  }
+
   const tabs = [
     { key: "summary", label: summaryLabel, children: summaryChildren ?? renderStepSummary(step) },
     ...extraTabs,
-    ...(historyItems.length > 0 ? [{
+    ...(executionTree ? [{
+      key: "history",
+      label: `执行路径 (${Object.keys(executionTree.nodes).length})`,
+      children: (
+        <div className="execution-tree">
+          <p className="execution-tree__hint">每次生成、重放、还原都会形成一个节点；当前路径会高亮，旧分支不会被删除。</p>
+          {renderExecutionNode(executionTree.rootNodeId)}
+        </div>
+      ),
+    }] : historyItems.length > 0 ? [{
       key: "history",
       label: `历史版本 (${historyItems.length})`,
       children: (
@@ -2145,11 +2542,11 @@ function OutputWorkspace({
             <div key={snapshot.id} className="step-history-item">
               <div className="step-history-item__header">
                 <div className="step-history-item__meta">
-                  <Tag color={snapshot.reason === "replay" ? "purple" : "blue"} variant="outlined">{snapshot.reason === "replay" ? "重放前状态" : "重新生成前状态"}</Tag>
+                  <Tag color={snapshot.reason === "replay" ? "purple" : "blue"} variant="filled">{snapshot.reason === "replay" ? "重放前状态" : "重新生成前状态"}</Tag>
                   <small>{new Date(snapshot.createdAt).toLocaleString()}</small>
                 </div>
                 {onRestore ? (
-                  <Button size="small" loading={restoringId === snapshot.id} onClick={() => doRestore(snapshot.id)}>还原此版本</Button>
+                  <Button className="settings-page__skill-button" size="small" loading={restoringId === snapshot.id} onClick={() => doRestore(snapshot.id)}>还原此版本</Button>
                 ) : null}
               </div>
               <p className="step-history-item__summary">
@@ -2187,6 +2584,10 @@ function PullRequestExecutionWorkspace({
   output?: PullRequestResult;
   editable?: boolean;
 }) {
+  const submittedFiles = output?.checklist?.find((item) => /已提交\s*\d+\s*个文件/.test(item));
+  const prUrl = output?.url && output.url !== "pending://pull-request" ? output.url : undefined;
+  const commitSha = output ? (output as { commitSha?: string }).commitSha : undefined;
+
   return (
     <section className="pr-execution-workspace">
       {editable && (
@@ -2212,31 +2613,44 @@ function PullRequestExecutionWorkspace({
       )}
       {output ? (
         <div className="pr-execution-workspace__result">
-          <Space direction="vertical" size={6} style={{ width: "100%" }}>
-            <div>
-              <Tag color={output.pushed ? "success" : "default"}>{output.pushed ? "已推送" : "未推送"}</Tag>
-              <Tag>{output.status}</Tag>
+          <SurfaceCard className="pr-execution-workspace__summary-card" title="提交结果" tone="accent">
+            <div className="pr-execution-workspace__status">
+              <Tag color={output.pushed ? "success" : "default"} variant="filled">{output.pushed ? "已推送" : "未推送"}</Tag>
+              <Tag color={output.pushed ? "success" : "default"} variant="filled">{output.status}</Tag>
             </div>
-            <SurfaceCard title="分支" tone="muted">{output.branch ?? draft.branch}</SurfaceCard>
-            <SurfaceCard title="Commit" tone="muted">{output.commitMessage ?? draft.commitMessage}</SurfaceCard>
-            {output.url && output.url !== "pending://pull-request" ? (
-              <SurfaceCard title="PR" tone="accent">
-                <a href={output.url} target="_blank" rel="noopener noreferrer">
-                  {output.prNumber ? `#${output.prNumber}` : "View PR"} — {output.url}
-                </a>
-              </SurfaceCard>
-            ) : null}
-            {(output as { commitSha?: string }).commitSha && (
-              <SurfaceCard title="Commit SHA" tone="muted">{(output as { commitSha?: string }).commitSha}</SurfaceCard>
-            )}
-            {output.checklist?.length > 0 && (
-              <SurfaceCard title="Checklist" tone="muted">
-                <ul style={{ margin: 0, paddingLeft: 18 }}>
-                  {output.checklist.map((item, i) => <li key={i} style={{ fontSize: 12 }}>{item}</li>)}
-                </ul>
-              </SurfaceCard>
-            )}
-          </Space>
+            <dl className="pr-execution-workspace__summary">
+              <div>
+                <dt>分支</dt>
+                <dd>{output.branch ?? draft.branch}</dd>
+              </div>
+              <div>
+                <dt>Commit</dt>
+                <dd>{output.commitMessage ?? draft.commitMessage}</dd>
+              </div>
+              {prUrl ? (
+                <div className="pr-execution-workspace__summary-item--wide">
+                  <dt>PR</dt>
+                  <dd>
+                    <a href={prUrl} target="_blank" rel="noopener noreferrer">
+                      {output.prNumber ? `#${output.prNumber}` : "View PR"} — {prUrl}
+                    </a>
+                  </dd>
+                </div>
+              ) : null}
+              {commitSha ? (
+                <div>
+                  <dt>Commit SHA</dt>
+                  <dd className="pr-execution-workspace__mono">{commitSha}</dd>
+                </div>
+              ) : null}
+              {submittedFiles ? (
+                <div>
+                  <dt>提交范围</dt>
+                  <dd>{submittedFiles}</dd>
+                </div>
+              ) : null}
+            </dl>
+          </SurfaceCard>
         </div>
       ) : (
         !editable && <Text type="secondary">PR 尚未生成，请先确认分支名和 commit message</Text>
@@ -2247,6 +2661,7 @@ function PullRequestExecutionWorkspace({
 
 function StateDrivenWorkspace({
   step,
+  run,
   status,
   messages,
   draft,
@@ -2262,6 +2677,8 @@ function StateDrivenWorkspace({
   onPrimaryAction,
   onSecondaryAction,
   onRestore,
+  onRestoreExecutionNode,
+  onDeleteExecutionNode,
   onFeedbackChange,
   onContinueCueChange,
   submitRef,
@@ -2270,6 +2687,7 @@ function StateDrivenWorkspace({
 }: {
   hasPendingFeedback?: boolean;
   step: StepRun;
+  run?: WorkflowRun;
   status: RuntimeStatus;
   messages: InterventionMessage[];
   draft: string;
@@ -2285,6 +2703,8 @@ function StateDrivenWorkspace({
   onPrimaryAction?: () => void;
   onSecondaryAction?: () => void;
   onRestore?: (snapshotId: string) => void;
+  onRestoreExecutionNode?: (nodeId: string) => void;
+  onDeleteExecutionNode?: (nodeId: string) => void;
   onWorkspaceViewChange: (value: WorkspaceView) => void;
   onFeedbackChange?: (hasPending: boolean) => void;
   onContinueCueChange?: (ready: boolean) => void;
@@ -2303,7 +2723,10 @@ function StateDrivenWorkspace({
   const output = (
     <OutputWorkspace
       onRestore={onRestore}
+      onRestoreExecutionNode={onRestoreExecutionNode}
+      onDeleteExecutionNode={onDeleteExecutionNode}
       onWorkspaceViewChange={onWorkspaceViewChange}
+      run={run}
       step={step}
       workspaceView={workspaceView}
     />
@@ -2325,7 +2748,10 @@ function StateDrivenWorkspace({
           <RuntimeStateBanner status={status} step={step} />
           <OutputWorkspace
             onRestore={onRestore}
+            onRestoreExecutionNode={onRestoreExecutionNode}
+            onDeleteExecutionNode={onDeleteExecutionNode}
             onWorkspaceViewChange={onWorkspaceViewChange}
+            run={run}
             step={step}
             summaryChildren={(
               <div className="runtime-summary-decision-flow">
@@ -2362,7 +2788,10 @@ function StateDrivenWorkspace({
         ) : (
         <OutputWorkspace
           onRestore={onRestore}
+          onRestoreExecutionNode={onRestoreExecutionNode}
+          onDeleteExecutionNode={onDeleteExecutionNode}
           onWorkspaceViewChange={onWorkspaceViewChange}
+          run={run}
           step={step}
           summaryChildren={(
             <StepInterventionWorkspace
@@ -2405,11 +2834,15 @@ function StateDrivenWorkspace({
         className="raw-output-disclosure"
         items={[{
           key: "raw-output",
-          label: "结构化结果 / 历史版本",
+          label: "结构化结果 / 执行路径",
           children: (
             <OutputWorkspace
               compact
+              onRestore={onRestore}
+              onRestoreExecutionNode={onRestoreExecutionNode}
+              onDeleteExecutionNode={onDeleteExecutionNode}
               onWorkspaceViewChange={onWorkspaceViewChange}
+              run={run}
               step={step}
               workspaceView={workspaceView}
             />
@@ -2529,7 +2962,7 @@ function SkillBadge({ step }: { step: StepRun }) {
   return (
     <ContextSection title="已注入 Skill">
       <Tooltip title={display.tooltipLines.length ? <div>{display.tooltipLines.map((l, i) => <div key={i}>{l}</div>)}</div> : undefined}>
-        <Tag color="purple">{display.label}</Tag>
+        <Tag color="purple" variant="filled">{display.label}</Tag>
       </Tooltip>
     </ContextSection>
   );
@@ -2562,7 +2995,7 @@ function DynamicSidePanel({
   repository: RepositorySnapshot;
   repoResult?: RepoWriteResult;
   verification?: VerificationResult;
-  metrics: ReturnType<typeof summarizeMetrics>;
+  metrics: RunMetricsSummary;
   agentMetrics: AgentMetric[];
 }) {
   if (activeStep.id === "clarification" || activeStep.id === "solution_design" || activeStep.id === "requirement_intake") {
@@ -2580,9 +3013,9 @@ function DynamicSidePanel({
         </ContextSection>
         <ContextSection title="范围标签">
           <Space wrap>
-            <Tag color="blue" variant="outlined">{requirement.pattern}</Tag>
-            <Tag variant="outlined">{repository.name}</Tag>
-            <Tag variant="outlined">{formatAgentName(activeStep.agent)}</Tag>
+            <Tag color="blue" variant="filled">{requirement.pattern}</Tag>
+            <Tag color="default" variant="filled">{repository.name}</Tag>
+            <Tag color="default" variant="filled">{formatAgentName(activeStep.agent)}</Tag>
           </Space>
         </ContextSection>
       </Card>
@@ -2659,7 +3092,7 @@ function DynamicSidePanel({
         <SkillBadge step={activeStep} />
         <ContextSection title="PR 状态">
           <div className="runtime-sidecar-status">
-            <Tag color={pr?.status === "ready" ? "success" : "blue"} variant="outlined">{formatRuntimeStatusValue(pr?.status)}</Tag>
+            <Tag color={pr?.status === "ready" ? "success" : "blue"} variant="filled">{formatRuntimeStatusValue(pr?.status)}</Tag>
             <Typography.Text ellipsis>{pr?.title ?? "PR 摘要等待生成"}</Typography.Text>
             <span>{pr?.url ?? "等待 PR 链接"}</span>
           </div>
@@ -2673,9 +3106,9 @@ function DynamicSidePanel({
         </ContextSection>
         <ContextSection title="质量门摘要">
           <div className="runtime-sidecar-quality">
-            <Tag color={verification?.lint === "failed" ? "error" : "success"} variant="outlined">Lint {formatRuntimeStatusValue(verification?.lint)}</Tag>
-            <Tag color={verification?.unitTests === "failed" ? "error" : "success"} variant="outlined">单测 {formatRuntimeStatusValue(verification?.unitTests)}</Tag>
-            {verification?.coverage != null && <Tag color={verification.coverage <= 0 ? "warning" : "success"} variant="outlined">覆盖率 {verification.coverage}%</Tag>}
+            <Tag color={verification?.lint === "failed" ? "error" : "success"} variant="filled">Lint {formatRuntimeStatusValue(verification?.lint)}</Tag>
+            <Tag color={verification?.unitTests === "failed" ? "error" : "success"} variant="filled">单测 {formatRuntimeStatusValue(verification?.unitTests)}</Tag>
+            {verification?.coverage != null && <Tag color={verification.coverage <= 0 ? "warning" : "success"} variant="filled">覆盖率 {verification.coverage}%</Tag>}
           </div>
         </ContextSection>
       </Card>
@@ -2726,6 +3159,70 @@ function ExecutionFeed({ events }: { events: RuntimeEvent[] }) {
   );
 }
 
+function RecalledCasesPanel({
+  run,
+  selectable = false,
+  selectedCaseIds = [],
+  onToggle,
+}: {
+  run: WorkflowRun;
+  selectable?: boolean;
+  selectedCaseIds?: string[];
+  onToggle?: (caseId: string, checked: boolean) => void;
+}) {
+  if (!run.recalledCases?.length) return null;
+  const activeIndex = run.steps.findIndex((step) => step.id === run.activeStepId);
+  const codeGenerationIndex = run.steps.findIndex((step) => step.id === "code_generation");
+  if (!selectable && codeGenerationIndex >= 0 && activeIndex >= 0 && activeIndex < codeGenerationIndex) return null;
+  const confirmedIds = new Set(run.recalledCaseSelection?.selectedCaseIds ?? []);
+  const selectedIds = new Set(selectable ? selectedCaseIds : run.recalledCases.map((item) => item.id).filter((id) => confirmedIds.has(id)));
+  const visibleCases = selectable
+    ? run.recalledCases
+    : run.recalledCases.filter((item) => selectedIds.has(item.id));
+  if (!selectable && visibleCases.length === 0) return null;
+
+  return (
+    <section className={`recalled-cases-panel${selectable ? " recalled-cases-panel--selectable" : ""}`}>
+      <div className="recalled-cases-panel__header">
+        <span className="workbench__eyebrow">{selectable ? "选择可参考的历史案例" : `已使用 ${visibleCases.length} 个历史案例`}</span>
+      </div>
+      <Collapse
+        ghost
+        items={visibleCases.map((item) => ({
+          key: item.id,
+          label: (
+            <div className="recalled-case-title">
+              {selectable ? (
+                <Checkbox
+                  checked={selectedIds.has(item.id)}
+                  disabled={!selectedIds.has(item.id) && selectedIds.size >= 3}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => onToggle?.(item.id, event.target.checked)}
+                />
+              ) : null}
+              <strong>{item.title}</strong>
+              <span className="recalled-case-title__score">
+                {item.embeddingScore ? `semantic ${Math.round(item.embeddingScore * 100)}% · ` : ""}score {item.score}
+              </span>
+            </div>
+          ),
+          children: (
+            <article className="recalled-case-detail">
+              <p>{item.summary}</p>
+              {item.matchedReasons.length ? <small>{item.matchedReasons.join(" · ")}</small> : null}
+              {item.touchedFiles.length ? (
+                <div className="runtime-chip-row">
+                  {item.touchedFiles.map((file) => <span className="runtime-chip" key={file}>{file}</span>)}
+                </div>
+              ) : null}
+            </article>
+          ),
+        }))}
+      />
+    </section>
+  );
+}
+
 export function WorkbenchPage() {
   const { projectId, runId } = useParams();
   const [run, setRun] = useState<WorkflowRun | null>(null);
@@ -2742,7 +3239,6 @@ export function WorkbenchPage() {
   const [projectBreadcrumb, setProjectBreadcrumb] = useState<{ id: string; name?: string } | undefined>(
     projectId ? { id: projectId, name: "正在加载项目..." } : undefined,
   );
-  const [agentMetrics, setAgentMetrics] = useState<AgentMetric[]>([]);
   const [repository, setRepository] = useState<RepositorySnapshot | null>(null);
   const [apiStatus, setApiStatus] = useState<"connecting" | "live" | "error">("connecting");
   const [errorMessage, setErrorMessage] = useState("");
@@ -2752,6 +3248,9 @@ export function WorkbenchPage() {
   const [pullRequestDraftDirty, setPullRequestDraftDirty] = useState(false);
   const [hasQuestionFeedback, setHasQuestionFeedback] = useState(false);
   const [continueCueReady, setContinueCueReady] = useState(false);
+  const [favoritingRun, setFavoritingRun] = useState(false);
+  const [selectedRecalledCaseIds, setSelectedRecalledCaseIds] = useState<string[]>([]);
+  const [recalledCaseSelectionKey, setRecalledCaseSelectionKey] = useState("");
   const structuredSubmitRef = useRef<(() => void) | null>(null);
 
   /** 统一提交所有待提交反馈（聊天框 + 结构化） */
@@ -2792,7 +3291,7 @@ export function WorkbenchPage() {
     ["blocked", "waiting", "paused"].includes(activeRuntimeStatus) &&
     (activeRuntimeStatus === "blocked" && activeStep?.id === "clarification" ? continueCueReady : true) &&
     !(activeStep && codeReviewNeedsRepair(activeStep)); // code_review 不通过时强调修复复审，continue 仍保留但不高亮。
-  const metrics = summarizeMetrics(agentMetrics);
+  const metrics = useMemo(() => run ? summarizeRunMetrics(run) : emptyMetricsSummary(), [run]);
   const legacyRepoResult = run ? getStepOutput<RepoWriteResult>(run.steps, "repo_write") : undefined;
   const repoResult = legacyRepoResult ?? getCodeGenerationRepoResult(codegenStep);
   const verification = run ? getStepOutput<VerificationResult>(run.steps, "verification") : undefined;
@@ -2853,13 +3352,20 @@ export function WorkbenchPage() {
   }, [run?.steps, pullRequestDraftDirty]);
 
   useEffect(() => {
+    if (!run?.id || run.recalledCaseSelection?.status !== "pending") return;
+    const key = `${run.id}:${run.recalledCaseSelection.defaultSelectedCaseIds.join(",")}:${run.recalledCases?.map((item) => item.id).join(",") ?? ""}`;
+    if (key === recalledCaseSelectionKey) return;
+    setRecalledCaseSelectionKey(key);
+    setSelectedRecalledCaseIds(run.recalledCaseSelection.defaultSelectedCaseIds);
+  }, [run?.id, run?.recalledCaseSelection?.status, run?.recalledCases, recalledCaseSelectionKey]);
+
+  useEffect(() => {
     let ignore = false;
 
     async function loadLiveData() {
       try {
-        const [workflowRun, nextMetrics, nextRepository] = await Promise.all([
+        const [workflowRun, nextRepository] = await Promise.all([
           getWorkflowRun(runId!),
-          getAgentMetrics(),
           getRepositorySnapshot(),
         ]);
 
@@ -2886,7 +3392,6 @@ export function WorkbenchPage() {
 
         if (!ignore) {
           applyRunSnapshot(workflowRun);
-          setAgentMetrics(nextMetrics);
           setRepository(nextRepository);
           setApiStatus("live");
           setErrorMessage("");
@@ -2894,7 +3399,6 @@ export function WorkbenchPage() {
       } catch (error) {
         if (!ignore) {
           setRun(null);
-          setAgentMetrics([]);
           setRepository(null);
           setErrorMessage(error instanceof Error ? error.message : "后端 API 不可达，请确认后端服务已启动。");
         }
@@ -2913,18 +3417,28 @@ export function WorkbenchPage() {
       return undefined;
     }
 
-    const dispose = subscribeWorkflowRun(runId, {
+    const currentRunId = runId;
+    const dispose = subscribeWorkflowRun(currentRunId, {
+      onOpen: () => {
+        setApiStatus("live");
+      },
       onUpdate: (latest) => {
         applyRunSnapshot(latest);
         setApiStatus("live");
       },
       onStepEvent: () => {
-        getAgentMetrics().then(setAgentMetrics).catch(() => undefined);
-        getWorkflowRun(runId!).then(applyRunSnapshot).catch(() => undefined);
+        getWorkflowRun(currentRunId).then(applyRunSnapshot).catch(() => undefined);
       },
-      onMetrics: setAgentMetrics,
-      onError: () => {
-        // SSE 断开时不影响主流程；onUpdate 仍会在重连后重新推送。
+      onMetrics: () => {
+        getWorkflowRun(currentRunId).then(applyRunSnapshot).catch(() => undefined);
+      },
+      onReconnect: () => {
+        setApiStatus("connecting");
+      },
+      onError: (error) => {
+        if (import.meta.env.DEV) {
+          console.warn("[workflow-sse]", "error", error);
+        }
       },
     });
 
@@ -2941,41 +3455,115 @@ export function WorkbenchPage() {
       : targetStep.status === "waiting-human" ? "confirm" : "run";
 
     try {
-      const nextRun = action === "confirm"
+      const nextRun = targetStep.id === "solution_design" && run.recalledCaseSelection?.status === "pending"
+        ? await confirmRecalledCases(run.id, selectedRecalledCaseIds)
+        : action === "confirm"
         ? await confirmWorkflowStep(run.id, targetStep.id)
         : await runWorkflowStep(run.id, targetStep.id, getRunOptionsForStep(targetStep.id));
       if (targetStep.id === "pull_request") setPullRequestDraftDirty(false);
       setRun(nextRun);
-      setAgentMetrics(await getAgentMetrics());
       setErrorMessage("");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "运行阶段失败，请确认后端服务可达。");
     }
   }
 
-  async function handleCodeReviewRepair(stepId: WorkflowStepId) {
+  async function handleCodeReviewRetry(stepId: WorkflowStepId) {
     if (!run) return;
     const step = run.steps.find((item) => item.id === stepId);
     if (!step || step.id !== "code_review" || !codeReviewNeedsRepair(step)) return;
 
     try {
       setErrorMessage("");
-      const nextRun = await repairCodeReview(run.id);
+      const nextRun = await retryCodeGenerationFromCodeReview(run.id);
       setRun(nextRun);
-      setAgentMetrics(await getAgentMetrics());
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "修复失败，请确认后端服务可达。");
+      setErrorMessage(error instanceof Error ? error.message : "按审查意见重跑生成代码失败，请确认后端服务可达。");
     }
   }
 
   async function handleReplay(stepId: WorkflowStepId) {
     if (!run) return;
-    if (!canReplayStep(stepId)) return;
+    console.log("[workflow-replay][frontend] click", {
+      runId: run.id,
+      stepId,
+      activeStepId: run.activeStepId,
+      canReplay: canReplayStep(stepId),
+      stepStatus: run.steps.find((step) => step.id === stepId)?.status,
+    });
+    if (!canReplayStep(stepId)) {
+      console.log("[workflow-replay][frontend] blocked-by-canReplay", { runId: run.id, stepId });
+      return;
+    }
+
+    let codeReviewContext: "default" | "from-code-review" | "omit" | undefined;
+
+    if (stepId === "code_generation") {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: "重跑生成代码？",
+          content: "这将清空上一次代码生成的变更，但是你可以随时回滚。旧 diff 会保留在历史版本中。",
+          okText: "清空并重跑",
+          cancelText: "取消",
+          okButtonProps: { className: "settings-page__skill-button settings-page__skill-button--danger", danger: true },
+          cancelButtonProps: { className: "settings-page__skill-button" },
+          centered: true,
+          onOk: () => {
+            console.log("[workflow-replay][frontend] modal-confirmed", { runId: run.id, stepId });
+            resolve(true);
+          },
+          onCancel: () => {
+            console.log("[workflow-replay][frontend] modal-cancelled", { runId: run.id, stepId });
+            resolve(false);
+          },
+        });
+      });
+      if (!confirmed) {
+        console.log("[workflow-replay][frontend] cancelled-before-request", { runId: run.id, stepId });
+        return;
+      }
+
+      // 生成代码阶段自身的重放始终按需求/方案重新生成。
+      // 只有从代码审查阶段点击 Retry 时，才注入审查意见回到生成代码。
+      codeReviewContext = "omit";
+    }
 
     try {
-      setRun(await replayWorkflowFrom(run.id, stepId));
+      setRun((currentRun) => {
+        if (!currentRun) return currentRun;
+        return {
+          ...currentRun,
+          activeStepId: stepId,
+          steps: currentRun.steps.map((step) => step.id === stepId ? {
+            ...step,
+            status: "running",
+            output: undefined,
+            finishedAt: undefined,
+            logs: [...step.logs, "正在从此阶段重放"],
+          } : step),
+        };
+      });
+      setErrorMessage("");
+      console.log("[workflow-replay][frontend] request-start", {
+        runId: run.id,
+        stepId,
+        codeReviewContext,
+      });
+      const nextRun = await replayWorkflowFrom(run.id, stepId, codeReviewContext ? { codeReviewContext } : undefined);
+      console.log("[workflow-replay][frontend] request-success", {
+        runId: nextRun.id,
+        activeStepId: nextRun.activeStepId,
+        stepStatus: nextRun.steps.find((step) => step.id === stepId)?.status,
+        updatedAt: nextRun.updatedAt,
+      });
+      setRun(nextRun);
       setErrorMessage("");
     } catch (error) {
+      console.error("[workflow-replay][frontend] request-failed", {
+        runId: run.id,
+        stepId,
+        message: error instanceof Error ? error.message : String(error),
+      });
       setErrorMessage(error instanceof Error ? error.message : "重放流程失败，请确认后端服务可达。");
     }
   }
@@ -3001,12 +3589,13 @@ export function WorkbenchPage() {
     }
 
     try {
-      const nextRun = step.id === "pull_request" || step.status !== "waiting-human"
+      const nextRun = step.id === "solution_design" && run.recalledCaseSelection?.status === "pending"
+        ? await confirmRecalledCases(run.id, selectedRecalledCaseIds)
+        : step.id === "pull_request" || step.status !== "waiting-human"
         ? await runWorkflowStep(run.id, step.id, getRunOptionsForStep(step.id))
         : await confirmWorkflowStep(run.id, step.id);
       if (step.id === "pull_request") setPullRequestDraftDirty(false);
       setRun(nextRun);
-      setAgentMetrics(await getAgentMetrics());
       setErrorMessage("");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "运行阶段失败，请确认后端服务可达。");
@@ -3022,6 +3611,32 @@ export function WorkbenchPage() {
       setErrorMessage("");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "还原历史版本失败。");
+      throw error;
+    }
+  }
+
+  async function handleRestoreExecutionNode(nodeId: string) {
+    if (!run) return;
+
+    try {
+      const nextRun = await restoreExecutionTreeNode(run.id, nodeId);
+      setRun(nextRun);
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "切换执行路径失败。");
+      throw error;
+    }
+  }
+
+  async function handleDeleteExecutionNode(nodeId: string) {
+    if (!run) return;
+
+    try {
+      const nextRun = await deleteExecutionTreeNode(run.id, nodeId);
+      setRun(nextRun);
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "删除执行版本失败。");
       throw error;
     }
   }
@@ -3057,7 +3672,6 @@ export function WorkbenchPage() {
     try {
       const nextRun = await createStepIntervention(run.id, target, nextMessage);
       setRun(nextRun);
-      setAgentMetrics(await getAgentMetrics());
       appendRuntimeEvents(targetStep ?? run.steps[0], ["结构化输出已更新", "待审核"]);
     } catch (error) {
       setRun(previousRun);
@@ -3068,6 +3682,20 @@ export function WorkbenchPage() {
   async function handleInterventionSubmit(event: FormEvent) {
     event.preventDefault();
     await submitInterventionMessage(chatDraft);
+  }
+
+  async function handleFavoriteCurrentRun() {
+    if (!run) return;
+    setFavoritingRun(true);
+    try {
+      const result = await favoriteWorkflowRunCase(run.id);
+      setRun(result.run);
+      message.success("需求已收藏到历史案例库");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "收藏需求失败");
+    } finally {
+      setFavoritingRun(false);
+    }
   }
 
   if (apiStatus === "connecting") {
@@ -3094,6 +3722,11 @@ export function WorkbenchPage() {
     );
   }
 
+  const isSelectingRecalledCases = activeStep.id === "solution_design" &&
+    activeStep.status === "waiting-human" &&
+    run.recalledCaseSelection?.status === "pending" &&
+    Boolean(run.recalledCases?.length);
+
   return (
     <main className="workbench runtime-workbench">
       <AppBreadcrumb
@@ -3117,6 +3750,16 @@ export function WorkbenchPage() {
           <span className="runtime-chip"><strong>{metrics.calls}</strong> 次调用</span>
           <span className="runtime-chip"><strong>{formatTokenCount(metrics.inputTokens + metrics.outputTokens)}</strong> Token</span>
           <span className="runtime-chip"><strong>{formatDuration(metrics.latencyMs)}</strong></span>
+          {run.steps.every((step) => step.status === "success") ? (
+            <Button
+              className="settings-page__skill-button"
+              size="small"
+              disabled={run.caseFavorited || favoritingRun}
+              onClick={handleFavoriteCurrentRun}
+            >
+              {run.caseFavorited ? "已收藏" : "收藏需求"}
+            </Button>
+          ) : null}
         </div>
       </section>
 
@@ -3129,7 +3772,7 @@ export function WorkbenchPage() {
           continueCueStepId={shouldCueContinue ? (displayActiveStep?.id ?? run.activeStepId) as WorkflowStepId : null}
           needsRepair={activeStep ? codeReviewNeedsRepair(activeStep) : false}
           onContinue={(stepId) => handleStepContinue(resolveBackendStepId(stepId, displaySteps, "continue"))}
-          onRepair={(stepId) => handleCodeReviewRepair(resolveBackendStepId(stepId, displaySteps, "continue"))}
+          onRepair={(stepId) => handleCodeReviewRetry(resolveBackendStepId(stepId, displaySteps, "continue"))}
           onReplay={(stepId) => handleReplay(resolveBackendStepId(stepId, displaySteps, "replay"))}
           onSelect={(stepId: WorkflowStepId) => {
             const backendId = resolveBackendStepId(stepId, displaySteps, "select");
@@ -3144,6 +3787,18 @@ export function WorkbenchPage() {
           }))}
         />
       </section>
+
+      <RecalledCasesPanel
+        run={run}
+        selectable={isSelectingRecalledCases}
+        selectedCaseIds={selectedRecalledCaseIds}
+        onToggle={(caseId, checked) => {
+          setSelectedRecalledCaseIds((current) => {
+            if (checked) return Array.from(new Set([...current, caseId])).slice(0, 3);
+            return current.filter((id) => id !== caseId);
+          });
+        }}
+      />
 
       <section className={`runtime-layout runtime-layout--focused runtime-layout--${activeRuntimeStatus}`} id="workflow">
         <section className="runtime-center" id="contract">
@@ -3173,6 +3828,8 @@ export function WorkbenchPage() {
                   : completeCurrentStep
               }
               onRestore={handleRestore}
+              onRestoreExecutionNode={handleRestoreExecutionNode}
+              onDeleteExecutionNode={handleDeleteExecutionNode}
               hasPendingFeedback={hasPendingFeedback}
               submitRef={structuredSubmitRef}
               onFeedbackChange={setHasQuestionFeedback}
@@ -3189,6 +3846,7 @@ export function WorkbenchPage() {
               pullRequestDraft={pullRequestDraft ?? undefined}
               repoResult={repoResult}
               running={activeRuntimeStatus === "running"}
+              run={run}
               status={activeRuntimeStatus}
               step={activeStep}
               verification={verification}

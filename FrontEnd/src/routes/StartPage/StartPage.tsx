@@ -214,6 +214,7 @@ export function StartPage() {
         </div>
       ),
       okText: "仅删除记录",
+      okButtonProps: { className: "settings-page__skill-button settings-page__skill-button--primary" },
       cancelText: "取消",
       async onOk() {
         await handleDeleteProject(project.id, false);
@@ -222,7 +223,7 @@ export function StartPage() {
         <>
           <CancelBtn />
           <OkBtn />
-          <Button danger loading={deletingProjectId === project.id} onClick={() => void handleDeleteProject(project.id, true)}>
+          <Button className="settings-page__skill-button settings-page__skill-button--danger" danger loading={deletingProjectId === project.id} onClick={() => void handleDeleteProject(project.id, true)}>
             删除记录和项目目录
           </Button>
         </>
@@ -325,8 +326,8 @@ export function StartPage() {
           <Paragraph>继续已有项目，或接入一个新代码库。</Paragraph>
         </div>
         <Space wrap>
-          <Button type="primary" onClick={() => openFlowModal("local")}>打开本地项目</Button>
-          <Button onClick={() => openFlowModal("git")}>克隆 Git 仓库</Button>
+          <Button className="settings-page__skill-button settings-page__skill-button--primary" onClick={() => openFlowModal("local")}>打开本地项目</Button>
+          <Button className="settings-page__skill-button" onClick={() => openFlowModal("git")}>克隆 Git 仓库</Button>
         </Space>
       </section>
 
@@ -353,7 +354,7 @@ export function StartPage() {
                   <span className="recent-project-card__meta">上次打开 {formatRelativeTime(project.lastOpenedAt)}</span>
                   <span className="recent-project-card__action">{getRecentWorkspaceAction(project)}</span>
                 </button>
-                <Button danger type="text" size="small" loading={deletingProjectId === project.id} onClick={() => confirmDeleteProject(project)}>
+                <Button className="settings-page__skill-button settings-page__skill-button--danger" danger size="small" loading={deletingProjectId === project.id} onClick={() => confirmDeleteProject(project)}>
                   删除
                 </Button>
               </div>
@@ -375,7 +376,7 @@ export function StartPage() {
         destroyOnHidden
         okText={selectedFlow === "git" ? "克隆并解析" : "解析项目"}
         onCancel={closeFlowModal}
-        okButtonProps={{ form: "workspace-import-form", htmlType: "submit" }}
+        okButtonProps={{ className: "settings-page__skill-button settings-page__skill-button--primary", form: "workspace-import-form", htmlType: "submit" }}
         open={inputModalOpen}
         title={selectedFlow === "git" ? "从 Git 克隆" : "打开本地项目"}
       >
@@ -404,7 +405,7 @@ export function StartPage() {
         cancelText="取消"
         closable={false}
         footer={[
-          <Button key="cancel" onClick={cancelImport}>
+          <Button key="cancel" className="settings-page__skill-button" onClick={cancelImport}>
             取消
           </Button>,
         ]}

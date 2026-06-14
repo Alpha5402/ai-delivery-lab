@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { WorkspaceContext } from "../domain/workspace.js";
 import { runRuntimeTool } from "./toolRegistry.js";
 
-function createWorkspace(): WorkspaceContext {
+function createWorkspace(overrides: Partial<WorkspaceContext> = {}): WorkspaceContext {
   return {
     id: "workspace-demo",
     mode: "repo-import",
@@ -39,6 +42,7 @@ function createWorkspace(): WorkspaceContext {
         riskNotes: ["None"],
       },
     },
+    ...overrides,
   };
 }
 
@@ -78,7 +82,7 @@ describe("runRuntimeTool", () => {
     });
   });
 
-  it("detects workflow commands with package scope cwd", async () => {
+  it("detects editable default verification commands", async () => {
     const workspace = createWorkspace();
     workspace.repositoryScan.scripts = {
       root: ["test"],
@@ -87,26 +91,106 @@ describe("runRuntimeTool", () => {
     };
 
     const call = await runRuntimeTool(workspace, "detect_workflow_commands");
-    const output = call.output as { candidates: Array<{ label: string; cwd: string; scope: string | null; available: boolean }> };
+    const output = call.output as { candidates: Array<{ label: string; command: string; cwd: string; scope: string | null; available: boolean }> };
 
-    expect(output.candidates.find((candidate) => candidate.label === "npm:test")).toMatchObject({
+    expect(output.candidates.find((candidate) => candidate.label === "custom:typecheck")).toMatchObject({
       available: true,
       scope: "root",
       cwd: "/tmp/demo",
+      command: "npm run typecheck",
     });
-    expect(output.candidates.find((candidate) => candidate.label === "npm:build")).toMatchObject({
+    expect(output.candidates.find((candidate) => candidate.label === "custom:unit-tests")).toMatchObject({
       available: true,
-      scope: "frontend",
-      cwd: "/tmp/demo/frontend",
+      scope: "root",
+      cwd: "/tmp/demo",
+      command: "npm test -- --run",
     });
+  });
+
+  it("reports live package.json scripts as trace data without creating implicit gates", async () => {
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "tool-registry-live-scripts-"));
+    try {
+      await writeFile(path.join(workspaceDir, "package.json"), JSON.stringify({
+        scripts: { test: "vitest" },
+        devDependencies: { vitest: "^4.0.0" },
+      }));
+      await mkdir(path.join(workspaceDir, "frontend"));
+      await writeFile(path.join(workspaceDir, "frontend", "package.json"), JSON.stringify({
+        scripts: {
+          build: "vite build",
+          test: "vitest",
+          typecheck: "tsc --noEmit",
+        },
+        devDependencies: {
+          typescript: "^5.0.0",
+          vite: "^5.0.0",
+          vitest: "^4.0.0",
+        },
+      }));
+      const workspace = createWorkspace({
+        workspaceDir,
+        repositoryScan: {
+          ...createWorkspace().repositoryScan,
+          repoPath: workspaceDir,
+          scripts: { frontend: ["build"] },
+        },
+      });
+
+      const call = await runRuntimeTool(workspace, "detect_workflow_commands");
+      const output = call.output as {
+        candidates: Array<{ label: string; cwd: string; scope: string | null; available: boolean }>;
+        detectedScripts: Record<string, string[]>;
+      };
+
+      expect(output.detectedScripts.frontend).toEqual(["build", "test", "typecheck"]);
+      expect(output.candidates.find((candidate) => candidate.label === "custom:build")).toMatchObject({
+        available: true,
+        scope: "root",
+        cwd: workspaceDir,
+      });
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports build warnings without failing the command", async () => {
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "tool-registry-build-"));
+    try {
+      await writeFile(path.join(workspaceDir, "package.json"), JSON.stringify({
+        scripts: {
+          build: "node -e \"console.error('(!) Some chunks are larger than 500 kB after minification.')\"",
+        },
+        devDependencies: {},
+      }));
+      await mkdir(path.join(workspaceDir, "node_modules"));
+      const workspace = createWorkspace({
+        workspaceDir,
+        repositoryScan: {
+          ...createWorkspace().repositoryScan,
+          repoPath: workspaceDir,
+          scripts: { root: ["build"] },
+        },
+      });
+
+      const call = await runRuntimeTool(workspace, "run_command", { label: "npm:build", cwd: workspaceDir });
+      const output = call.output as { status: string; warningKind?: string; warningSummary?: string };
+
+      expect(output.status).toBe("passed");
+      expect(output.warningKind).toBe("bundle_size");
+      expect(output.warningSummary).toContain("构建已通过");
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
   });
 
   it("returns not_executed for npm commands when workspace dependencies are missing", async () => {
     const call = await runRuntimeTool(createWorkspace(), "run_command", { label: "npm:test", cwd: "/tmp/demo" });
-    const output = call.output as { status: string; stderrPreview: string };
+    const output = call.output as { status: string; stderrPreview: string; failureSummary?: string; suggestedAction?: string };
 
     expect(output.status).toBe("not_executed");
     expect(output.stderrPreview).toContain("依赖未安装");
+    expect(output.failureSummary).toContain("依赖尚未安装");
+    expect(output.suggestedAction).toContain("npm install");
   });
 });
 

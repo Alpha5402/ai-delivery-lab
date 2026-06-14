@@ -14,6 +14,8 @@ export type {
   InterventionMessage,
   StepRun,
   WorkflowRun,
+  WorkflowExecutionNode,
+  WorkflowExecutionTree,
   StepRunSnapshot,
 } from "@backend/domain/workflow";
 

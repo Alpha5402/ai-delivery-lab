@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell/AppShell";
 import { ErrorBoundary } from "./components/ErrorBoundary/ErrorBoundary";
+import { BoardPage } from "./routes/BoardPage/BoardPage";
 import { ChatPage } from "./routes/ChatPage/ChatPage";
 import { NotFoundPage } from "./routes/NotFoundPage/NotFoundPage";
 import { SettingsPage } from "./routes/SettingsPage/SettingsPage";
@@ -16,6 +17,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<StartPage />} />
+            <Route path="/board" element={<BoardPage />} />
             <Route path="/start" element={<StartPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/chat" element={<ChatPage />} />
